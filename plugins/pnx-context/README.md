@@ -4,7 +4,7 @@ A Claude Code mod that shows, beside your conversation, which PlatformNEX compon
 
 ## The four views
 
-The header names the component and its health. Under it, `1` to `4` pick a view; the pane opens on **Live** while a deploy runs and on **Next** otherwise.
+The header names the component and its health. Under it, `1` to `4` pick a view (`5` opens Dev cycles, below); the pane opens on **Live** while a deploy runs and on **Next** otherwise.
 
 | View | Shows |
 | --- | --- |
@@ -55,6 +55,16 @@ Once the key is saved, the pane also keeps this machine's Claude Code connected 
 
 A coding job may push a `platformnex/` branch and open a draft pull request with your own git and gh sign-ins; it never merges and never deploys.
 
+## Dev cycles view
+
+A fifth view, `5` Dev cycles, shows only dev cycles, because they are not about the open repository: nothing about repositories, health, releases or deploy steps is there. It is never picked by itself. Its label carries a badge so it is noticed from the other views: `◐N` while N jobs run, `✕` for a failure you have not seen yet (it clears once you have opened the view and left it), nothing when idle. On a narrow pane the label shortens to `Dev`. It is offered even where no component is found; the other four are not.
+
+It shows up to five jobs, then `+N more`, two short lines each: `◐ title   writing 4 files`, then `repo · this machine | cloud · 3m`. Marks (always with a word): ◐ running, ✓ done (with `PR #n`), ✕ failed (with a short fixed reason) or interrupted, ⏸ starting or queued, ⊘ cancelled. Under the rows is the log, the last 12 events as `HH:MM  text`; `l` shows the last 30 and back. A failed job and its log lines are red, and also say so in words. With nothing to show it says "No dev cycle running. Start one in PlatformNEX." When a job seen running on this machine finishes or fails, one line appears in the notice area (in this view under the log).
+
+- **This machine** comes from `pnx activity --json`, which reads a small file the pnx worker keeps. It needs no key and makes no network call. It is read every 3 s while a job runs or the view is open, else every 15 s. It needs **pnx 0.1.19 or newer**. The log has phase lines (cloning, writing files, committing N files, opening the draft pull request, finished or failed with a short reason) only while a job runs, and, once at the commit step, one `changed <path>` line per file (first 10); there is no per-file line while Claude is still working. If the file can't be read the view says "Log unavailable on this machine" and never pnx's own text. With an older pnx (or none) it shows only the cloud rows and one line, "Update pnx for the live log on this machine", and asks pnx-fast-dev for the newer pnx.
+- **Cloud** comes from the server's live coding-agent runs for the Systems you can read (`GET /api/catalog/catalog/dev-cycles/codegen/live`, with your key's token), every 15 s while one is live, else every 60 s. These runs name a component, not a repository or branch, so a run the cloud and this machine both report can show twice.
+- **Never shown**: a key, token, address, the pull request's address (only its number), pnx's own error text, or anything outside the named fields. Everything from pnx and the server is cut to a short length, stripped of control characters, and dropped if it looks like a secret.
+
 ## Commands
 
 | Command | Does |
@@ -64,7 +74,7 @@ A coding job may push a `platformnex/` branch and open a draft pull request with
 | `/pnx-context setup` | print the commands to save your key |
 | `/pnx-context check` | test the address, the key and the lookup route, and say what to fix. It never shows the key |
 
-In the pane (when it has focus): `1` to `4` switch views, `t` moves to the repository's next component, `w` opens the repository list (`a` to `h` pick one, `p` and `n` turn its page), `r` refreshes, `k` runs the check and shows its result in the pane (`q` closes it), `x` dismisses a plan, `m` shows it in full or short. In the Next view `a`, `b`, `c` run an item's action.
+In the pane (when it has focus): `1` to `5` switch views, `t` moves to the repository's next component, `w` opens the repository list (`a` to `h` pick one, `p` and `n` turn its page), `r` refreshes, `k` runs the check and shows its result in the pane (`q` closes it), `x` dismisses a plan, `m` shows it in full or short. In the Next view `a`, `b`, `c` run an item's action; in the Dev cycles view `l` shows the full log or the short one.
 
 ## Ask PlatformNEX for a change plan
 

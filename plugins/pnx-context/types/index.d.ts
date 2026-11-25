@@ -40,8 +40,8 @@ export type Release = {
   phases?: ReleasePhase[]
 }
 
-/** The pane's four views. */
-export type View = 'live' | 'next' | 'release' | 'envs'
+/** The pane's five views. */
+export type View = 'live' | 'next' | 'release' | 'envs' | 'dev'
 
 export type Match = {
   entityRef: string
@@ -118,7 +118,7 @@ export type Ui = {
   askHidden?: string
   /** True while the ASK answer is shown in full (m). */
   askOpen?: boolean
-  /** The view the person picked (1 to 4); empty means Live while a deploy runs, otherwise Next. */
+  /** The view the person picked (1 to 5); empty means Live while a deploy runs, otherwise Next. Dev cycles is never chosen by itself. */
   view?: View
   /** True while the repository list is open (w). */
   reposOpen?: boolean
@@ -129,7 +129,7 @@ export type Ui = {
   /** A release draft waiting for the person's confirmation. */
   pending?: { entityRef: string; environmentId: number; environmentName: string; branch: string; head?: string }
   /** The result of the last action, one line plus an optional link. */
-  notice?: { text: string; url?: string }
+  notice?: { text: string; url?: string; title?: string; tone?: 'success' | 'error' }
   /** Setup in the pane: the environment picked (prod, dit1), whether a key is being checked, and the last result. Never the key. */
   setupEnv?: 'prod' | 'dit1'
   setupBusy?: boolean
@@ -145,6 +145,10 @@ export type Ui = {
   connOpen?: boolean
   /** True while Disconnect waits for the person's yes. */
   confirmDisconnect?: boolean
+  /** When the person last left the Dev cycles view (ms): a failure after it is unseen and the view's badge shows ✕. */
+  devSeenAt?: number
+  /** True while the Dev cycles log is shown in full (l: 30 events) instead of the last 12. */
+  logOpen?: boolean
   /** True while the pane reads everything again (⟳, a new connection, the timer), or a ⟳ waits for one to finish. */
   isRefreshing?: boolean
 }
@@ -152,8 +156,31 @@ export type Ui = {
 /** Whether this machine's Claude Code takes PlatformNEX's dev-cycle jobs now (the worker the plugin runs), and why the last try stopped. */
 export type ClaudeCode = { status: 'connecting' | 'online' | 'offline'; note?: string }
 
+/** One dev cycle job, from this machine's pnx or the server's live runs, cut down to what the view draws. */
+export type DevJob = {
+  id: string
+  source: 'local' | 'cloud'
+  title: string
+  repo?: string
+  state: 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted' | 'waiting'
+  phase?: string
+  files: number
+  /** ms since the epoch. */
+  startedAt?: number
+  endedAt?: number
+  /** The pull request's number, never its address. */
+  pr?: number
+  /** A short fixed phrase chosen by pnx. */
+  reason?: string
+}
+
+export type DevEvent = { at: number; level: 'info' | 'warn' | 'error'; text: string }
+
+/** What the Dev cycles view shows. local: how this machine's log could be read (old: no pnx, or before 0.1.19). */
+export type DevCycles = { local: 'unknown' | 'ok' | 'old' | 'failed'; jobs: DevJob[]; events: DevEvent[]; cloud: DevJob[] }
+
 declare module 'claude-code' {
   interface PluginState {
-    'pnx-context': { data: Shaped<Data>; ui: Shaped<Ui>; asks: Shaped<Asks>; claudeCode: Shaped<ClaudeCode> }
+    'pnx-context': { data: Shaped<Data>; ui: Shaped<Ui>; asks: Shaped<Asks>; claudeCode: Shaped<ClaudeCode>; devCycles: Shaped<DevCycles> }
   }
 }
