@@ -1,6 +1,21 @@
 # pnx-context
 
-A Claude Code mod that shows, beside your conversation, which PlatformNEX component the repo you are in belongs to: its health, open releases and small graphs. It can also open a **draft** release for a non-production environment. It never deploys.
+A Claude Code mod that shows, beside your conversation, which PlatformNEX component the repo you are in belongs to, in four short views. It can also open a **draft** release for a non-production environment. It never deploys.
+
+## The four views
+
+The header names the component and its health. Under it, `1` to `4` pick a view; the pane opens on **Live** while a deploy runs and on **Next** otherwise.
+
+| View | Shows |
+| --- | --- |
+| `1` Live | The deploy under way (or the one that ended in the last 30 minutes) as steps: approval while it waits for one, tag pushed, build, rollout when the release holds a canary, deployed. Steps only: logs are a link to the portal. While a deploy runs its release is read again every 15 seconds. |
+| `2` Next | Up to three things that need you, most urgent first: a build that did not start, a release that failed, a release ready to deploy, then the System's health reasons. Each has one action: a link to the release, or a button that puts the report into this chat as a prompt (**fix with Claude**, **bring into chat**). |
+| `3` Release | The open release: how many phases are reviewed, the phase it stopped at (to review, not ready yet, or stale with the reason) and the phases left. The draft buttons are here. |
+| `4` Environments | One row for each environment: what last deployed there, when, and any release open for it; plus your local branch and commit. |
+
+A line above the prompt says the same in short while a deploy runs or something needs you, whether the pane is open or not.
+
+The buttons that put text into the chat send nothing to PlatformNEX. Text that came from PlatformNEX is quoted in that prompt as data.
 
 ## Set up (once per person)
 
@@ -33,7 +48,7 @@ The portal address has a default, so only the key is needed. To use another envi
 Once the key is saved, the pane also keeps this machine's Claude Code connected to PlatformNEX whenever Claude Code is open (it runs `pnx claude run --allow-codegen --auto-link` in the background). That is what lets the development cycles you start use your own Claude Code: drafting the plan, Start coding, Continue and Run again. There is nothing else to run: it links this machine the first time, uses the key and address saved here (not the ones in pnx's own `~/.config/pnx/config.json`; pnx keeps its machine link and its one-per-machine lock in that folder), and stops when you leave Claude Code, telling PlatformNEX at once.
 
 - **It needs** Node.js 20 or newer, Claude Code signed in, `git` and `gh` signed in for coding jobs, and pnx 0.1.18 or newer, which the pnx-fast-dev Ability installs and keeps current.
-- **The pane shows one line**: `● Dev cycles: your Claude Code is online`, or `offline · press k to see why`.
+- **The pane says nothing while it is online.** When it is not, one line says `○ Dev cycles offline · press k to see why`.
 - **When it is offline, ✓ check (`k`) shows why**: which of those is missing (for pnx, also why pnx-fast-dev could not install it) and the last error, each ✗ with what to do. It also tries to connect again at once, so after installing what was missing there is no wait. More detail goes to the debug log (`claude --debug`).
 - **One per machine.** A second Claude Code window shows it online too; if the window running it closes, another open one takes over within a minute.
 - **To turn it off**, set the `devCycles` option to `off` (`/plugin configure pnx-context@platformnex-abilities`): the pane only.
@@ -49,7 +64,7 @@ A coding job may push a `platformnex/` branch and open a draft pull request with
 | `/pnx-context setup` | print the commands to save your key |
 | `/pnx-context check` | test the address, the key and the lookup route, and say what to fix. It never shows the key |
 
-In the pane (when it has focus): `1`, `2`, `3` switch component tabs, `r` refreshes, `k` runs the check and shows its result in the pane (`q` closes it), `a` to `h` pick a repo from the list, `p` and `n` turn its page, `x` dismisses a plan, `m` shows it in full or short.
+In the pane (when it has focus): `1` to `4` switch views, `t` moves to the repository's next component, `w` opens the repository list (`a` to `h` pick one, `p` and `n` turn its page), `r` refreshes, `k` runs the check and shows its result in the pane (`q` closes it), `x` dismisses a plan, `m` shows it in full or short. In the Next view `a`, `b`, `c` run an item's action.
 
 ## Ask PlatformNEX for a change plan
 

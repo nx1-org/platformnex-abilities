@@ -9,7 +9,39 @@ export type Health = {
   history: string[]
 }
 
-export type Release = { id: string; status: string; environment?: string; target?: string }
+/** One phase of a release session: its name and review status (pending, computed, acknowledged, stale). */
+export type ReleasePhase = { phase: string; status: string; staleReason?: string }
+
+/** A release session, cut down to what the pane draws. Times are ms since the epoch. */
+export type Release = {
+  id: string
+  status: string
+  environment?: string
+  environmentId?: number
+  target?: string
+  /** Short commit. */
+  sha?: string
+  /** release, rollback or restart. */
+  kind?: string
+  currentPhase?: string
+  createdAt?: number
+  updatedAt?: number
+  completedAt?: number
+  tagPushedAt?: number
+  /** True once the session names its build. */
+  hasBuild?: boolean
+  /** True when the tag was pushed and no build started for it. */
+  isBuildMissing?: boolean
+  /** The canary's state word, when the release holds a rollout. */
+  rollout?: string
+  /** Why it ended, short. */
+  outcome?: string
+  /** Only for the release the Release view shows. */
+  phases?: ReleasePhase[]
+}
+
+/** The pane's four views. */
+export type View = 'live' | 'next' | 'release' | 'envs'
 
 export type Match = {
   entityRef: string
@@ -18,11 +50,10 @@ export type Match = {
   systemRefs: string[]
   environments: Environment[]
   health?: Health
-  /** Latest builds' outcomes, oldest first: ok | bad | other. */
-  builds?: string[]
-  /** Request counts over the metrics window, oldest first. */
-  requests?: number[]
+  /** The latest release sessions, newest first: open ones and finished ones. */
   releases?: Release[]
+  /** When the releases were last read, ms since the epoch (they are read more often while one deploys). */
+  releasesAt?: number
   /** When this match's detail was read, ms since the epoch. */
   detailAt?: number
   /** Why some detail is missing, short. */
@@ -87,6 +118,10 @@ export type Ui = {
   askHidden?: string
   /** True while the ASK answer is shown in full (m). */
   askOpen?: boolean
+  /** The view the person picked (1 to 4); empty means Live while a deploy runs, otherwise Next. */
+  view?: View
+  /** True while the repository list is open (w). */
+  reposOpen?: boolean
   /** Which page of the repository list is showing, from 0. */
   page?: number
   /** The component tab the person picked, by entity ref; empty means the first. */
