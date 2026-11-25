@@ -1,7 +1,7 @@
 // Pure parts of the Dev cycles view: `pnx activity --json` and the server's live runs, cut down to named, capped fields,
 // and how they read in the pane. Both are untrusted: control characters are stripped, anything that looks like a secret
 // is dropped, and pnx's own error text is never shown.
-import type { DevEvent, DevJob } from '../types'
+import type { ClaudeCode, DevEvent, DevJob } from '../types'
 import { cap } from './lib'
 
 const MAX_OUT = 200_000
@@ -172,4 +172,18 @@ export function badge(local: DevJob[], cloud: DevJob[], seenAt: number | undefin
   const isUnseen = !isOpen && jobs.some(j => (j.state === 'failed' || j.state === 'interrupted') && (j.endedAt ?? j.startedAt ?? 0) > (seenAt ?? 0))
 
   return [running > 0 ? `◐${running}` : '', isUnseen ? '✕' : ''].filter(p => p !== '').join(' ')
+}
+
+/**
+ * The line the Dev cycles view shows about this machine's worker, so an empty view never claims "nothing running" when the
+ * worker is off, still connecting or failing. undefined means the worker is online and the view may say nothing is running.
+ * The reason is the worker's own last note, capped and dropped if it looks like a secret.
+ */
+export function devStatus(w: { isOff: boolean; cc: ClaudeCode; width: number }): { text: string; tone: 'warning' | undefined } | undefined {
+  if (w.isOff) return { text: 'Dev cycles are turned off in settings.', tone: undefined }
+  if (w.cc.status === 'connecting') return { text: 'Connecting this machine to dev cycles…', tone: undefined }
+  if (w.cc.status === 'online') return undefined
+  const why = text(w.cc.note, 140)
+
+  return { text: cap(`○ Not connected on this machine${why === undefined ? '' : `: ${why}`}. Press k for the full check.`, w.width * 2), tone: 'warning' }
 }

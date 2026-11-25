@@ -31,7 +31,7 @@ export const pollSoon = (): void => {
 }
 
 /** A connection was dropped: nothing of it stays on screen. */
-export const forgetDevCycles = ($: EngineInterface): Promise<unknown> => {
+export function forgetDevCycles($: EngineInterface): Promise<unknown> {
   pollSoon()
 
   return update($, devCycles, () => EMPTY)
