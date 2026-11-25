@@ -67,13 +67,46 @@ const stubWorld = (
     spawned?: (readonly string[])[]
     /** The repository the session is in, as Claude Code names it (`C:\w\gateway` on Windows); absent, none. */
     inRepo?: string
+    /** The environment each started process got, in order. */
+    spawnEnv?: (Record<string, string> | undefined)[]
+    /** Every command the plugin ran to completion (not started), in order. */
+    runs?: (readonly string[])[]
+    /** What the clipboard was given. */
+    copied?: string[]
+    /** Every line written to a log. */
+    logs?: string[]
+    /**
+     * A fake pnx for sign in. `login`: what `pnx login` prints, piece by piece (a promise is waited for first), then its
+     * exit code. `tokens`: what `pnx token` prints on each call (the last one repeats). `logout`: what `pnx logout` prints.
+     */
+    pnx?: { login?: (string | Promise<void>)[]; loginExit?: number; tokens?: string[]; logout?: string }
   } = {},
 ) => {
   let tokens = 0
   let scans = 0
-  // A started process is recorded and ends at once, printing nothing.
+  let tokenCalls = 0
+  if (opts.copied !== undefined) on('ui.copy', (_, e) => {
+    opts.copied?.push(e.text)
+
+    return { value: { isCopied: true as const } }
+  })
+  if (opts.logs !== undefined) on('ui.log', (_, e) => {
+    opts.logs?.push(JSON.stringify(e))
+
+    return { value: undefined }
+  })
+  // A started process is recorded and ends at once, printing nothing; the fake pnx's login prints what it was given.
   on('process.spawn', async function* (_, e) {
     opts.spawned?.push(e.argv)
+    opts.spawnEnv?.push(e.env)
+    if (opts.pnx !== undefined && e.argv[2] === 'login') {
+      for (const piece of opts.pnx.login ?? []) {
+        if (typeof piece === 'string') yield { stream: 'stdout' as const, text: piece }
+        else await piece
+      }
+
+      return { value: { code: opts.pnx.loginExit ?? 0, signal: null } }
+    }
 
     return { value: { code: 1, signal: null } }
   })
@@ -107,6 +140,14 @@ const stubWorld = (
     return { value: [...(repos.some(r => r.root === dir) ? [entry('.git')] : []), ...names.map(entry)] }
   })
   on('process.run', async (_, e) => {
+    opts.runs?.push(e.argv)
+    if (opts.pnx !== undefined) {
+      const done = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+      const answers = opts.pnx.tokens ?? []
+      if (e.argv[2] === 'token') return done(answers[Math.min(tokenCalls++, answers.length - 1)] ?? '')
+      if (e.argv[2] === 'logout') return done(opts.pnx.logout ?? '')
+      if (e.argv[2]?.includes('hostname')) return done('dev-laptop')
+    }
     if (e.argv[0] === 'git') {
       const repo = repos.find(r => r.root === same(e.argv[2] ?? ''))
       const args = e.argv.slice(3).join(' ')
@@ -924,5 +965,307 @@ test('in the terminal, connect can be pressed again after a failed try without t
 
   // Both presses tried the key: one sign-in each.
   expect(sent.filter(r => r.url.endsWith('/auth/api-key-token')).length).toBe(2)
+  await ui.unmount()
+})
+
+// ---- Sign in (single sign-on through pnx). pnx is faked: its login prints events, its token prints a short token. ----
+
+const SIGNIN_OPTIONS = { baseUrl: BASE }
+const NOW = Date.parse('2026-11-17T09:30:00Z')
+const PNX_OK = JSON.stringify({ cli: '/pnx/cli.js', version: '0.1.19' })
+const FIND_OK = { stdout: PNX_OK, until: Promise.resolve() }
+const TOKEN_A = 'sso-access-token-AAAAAAAAAAAA'
+const DEVICE_SECRET = 'pnxd_device_secret_value'
+const REFRESH_SECRET = 'pnxr_refresh_secret_value'
+const tokenLine = (token: string, endsAt: number) => JSON.stringify({ accessToken: token, expiresAt: new Date(endsAt).toISOString() })
+const SIGNED_OUT_LINE = JSON.stringify({ error: 'signed_out' })
+// pnx puts extra fields in its lines here on purpose: none of them may reach the screen, the state or a log.
+const CODE_LINE = `${JSON.stringify({ event: 'code', userCode: 'ABCD-1234', verificationUri: `${BASE}/account/device-login`, verificationUriComplete: `${BASE}/account/device-login?code=ABCD-1234`, expiresIn: 600, deviceCode: DEVICE_SECRET })}\n`
+const APPROVED_LINE = `${JSON.stringify({ event: 'approved', email: 'me@example.test', sessionExpiresAt: '2026-11-18T09:30:00Z', refreshToken: REFRESH_SECRET })}\n`
+const errorLine = (code: string) => `${JSON.stringify({ event: 'error', code, message: 'text from pnx that is never shown' })}\n`
+const gate = () => {
+  let release = (): void => undefined
+  const until = new Promise<void>(resolve => {
+    release = resolve
+  })
+
+  return { until, release }
+}
+
+test('setup offers Sign in first and the API key below it, unchanged', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  stubWorld(on, sent)
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  expect((await ui.find({ key: 'signin-start' }))?.text).toBe('Sign in')
+  expect((await ui.find({ type: 'Text', text: /^Or use an API key$/ }))?.text).toBe('Or use an API key')
+  expect(await ui.find({ key: 'setup-key' })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^1  Create an API key$/ }))?.text).toBeDefined()
+  expect(sent).toEqual([])
+  await ui.unmount()
+})
+
+test('Sign in shows the link, the code and a countdown, then connects as the person, with no key and no secret kept', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  const spawned: (readonly string[])[] = []
+  const spawnEnv: (Record<string, string> | undefined)[] = []
+  const runs: (readonly string[])[] = []
+  const copied: string[] = []
+  const logs: string[] = []
+  const writes: string[] = []
+  on('state.set', (_, e, next) => {
+    writes.push(JSON.stringify(e))
+
+    return next(e)
+  })
+  const approval = gate()
+  // The first `pnx token` (at start, nobody signed in yet) says signed out; once approved there is a token.
+  stubWorld(on, sent, {
+    spawned,
+    spawnEnv,
+    runs,
+    copied,
+    logs,
+    findPnx: FIND_OK,
+    pnx: { login: [CODE_LINE.slice(0, 40), CODE_LINE.slice(40), 'Opening nothing, this is not an event\n', approval.until, APPROVED_LINE], tokens: [SIGNED_OUT_LINE, tokenLine(TOKEN_A, NOW + 600_000)] },
+  })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /SET UP PLATFORMNEX/ }))?.text).toBe('SET UP PLATFORMNEX')
+
+  await ui.press({ key: 'signin-start' })
+  await clock.settle()
+  // The code arrived in two pieces and an extra line: it is shown once, with the link and the time left.
+  expect((await ui.find({ type: 'Text', text: /^ABCD-1234$/ }))?.text).toBe('ABCD-1234')
+  expect((await ui.find({ type: 'Text', text: /device-login\?code=ABCD-1234/ }))?.text).toBe(`${BASE}/account/device-login?code=ABCD-1234`)
+  expect((await ui.find({ type: 'Text', text: /Waiting for you/ }))?.text).toMatch(/Waiting for you · \d+:\d\d left/)
+  expect(await ui.find({ key: 'signin-cancel' })).toBeDefined()
+  expect(await ui.find({ key: 'signin-start' })).toBeUndefined()
+  await ui.press({ key: 'signin-copy-code' })
+  await ui.press({ key: 'signin-copy-link' })
+  await clock.settle()
+  expect(copied).toEqual(['ABCD-1234', `${BASE}/account/device-login?code=ABCD-1234`])
+  expect(spawned.find(a => a[2] === 'login')).toEqual(['node', '/pnx/cli.js', 'login', '--json', '--no-open', '--client', 'pnx-context', '--name', 'dev-laptop', '--catalog-url', `${BASE}/api/catalog`])
+
+  approval.release()
+  await clock.settle()
+
+  expect((await ui.find({ type: 'Text', text: /^connected to / }))?.text).toBe('connected to portal.example.test')
+  expect((await ui.find({ type: 'Text', text: /connected as/ }))?.text).toBe('connected as me@example.test via sign-in')
+  expect((await ui.find({ type: 'Text', text: /^GATEWAY$/ }))?.text).toBe('GATEWAY')
+  // The token came from pnx; no key was traded, and nothing else carried an Authorization.
+  expect(sent.some(r => r.url.endsWith('/auth/api-key-token'))).toBe(false)
+  expect(sent.length).toBeGreaterThan(0)
+  expect(sent.every(r => r.headers['Authorization'] === `Bearer ${TOKEN_A}`)).toBe(true)
+  // No key is saved or cleared: the plugin's settings are not rewritten.
+  expect(runs.some(a => a.includes('configure'))).toBe(false)
+
+  // Dev cycles start without any key: pnx reads the sign-in itself.
+  await clock.advance(20_000)
+  const worker = spawned.findIndex(a => a[2] === 'claude')
+  expect(worker).toBeGreaterThanOrEqual(0)
+  expect(spawnEnv[worker]).toEqual({ PNX_CATALOG_URL: `${BASE}/api/catalog` })
+
+  // The device code, the refresh token and the access token are in no state, no log and nothing drawn.
+  const everything = [JSON.stringify(await ui.drawn()), ...writes, ...logs].join('\n')
+  for (const secret of [DEVICE_SECRET, REFRESH_SECRET, TOKEN_A, 'pnxd_', 'pnxr_']) expect(everything).not.toContain(secret)
+  await ui.unmount()
+})
+
+test('Cancel ends the sign-in at once and goes back to the choice', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  const never = gate()
+  stubWorld(on, sent, { findPnx: FIND_OK, pnx: { login: [CODE_LINE, never.until], tokens: [SIGNED_OUT_LINE] } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'signin-start' })
+  await clock.settle()
+  expect((await ui.find({ type: 'Text', text: /^ABCD-1234$/ }))?.text).toBe('ABCD-1234')
+
+  await ui.press({ key: 'signin-cancel' })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: /ABCD-1234/ })).toBeUndefined()
+  expect((await ui.find({ key: 'signin-start' }))?.text).toBe('Sign in')
+  expect((await ui.find({ type: 'Text', text: /SET UP PLATFORMNEX/ }))?.text).toBe('SET UP PLATFORMNEX')
+  expect(await ui.find({ type: 'Text', text: /^connected to / })).toBeUndefined()
+  never.release()
+  await ui.unmount()
+})
+
+for (const [name, line, text] of [
+  ['denied in the portal', errorLine('denied'), /Sign-in was denied/],
+  ['not available on this server (off)', errorLine('off'), /Sign in is not available here yet\. Use an API key\./],
+  ['the code ran out', errorLine('expired'), /The code ran out/],
+  ['no credential store', errorLine('store'), /secure credential store/],
+] as const) {
+  test(`a sign-in that ends as ${name} says so, offers the API key and never shows pnx's own text`, { options: SIGNIN_OPTIONS }, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const sent: Sent[] = []
+    stubWorld(on, sent, { findPnx: FIND_OK, pnx: { login: [CODE_LINE, line], loginExit: 1, tokens: [SIGNED_OUT_LINE] } })
+
+    await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'signin-start' })
+    await clock.settle()
+
+    expect((await ui.find({ type: 'Text', text: /^✗ / }))?.text).toMatch(text)
+    expect(JSON.stringify(await ui.drawn())).not.toContain('text from pnx that is never shown')
+    // Not connected; Sign in can be pressed again and the key field is still there.
+    expect(await ui.find({ type: 'Text', text: /^connected to / })).toBeUndefined()
+    expect((await ui.find({ key: 'signin-start' }))?.text).toBe('Sign in')
+    expect(await ui.find({ key: 'setup-key' })).toBeDefined()
+    await ui.unmount()
+  })
+}
+
+test('a sign-in that ends without an approval (pnx exits 0 without the event) is a failure, not a connection', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  stubWorld(on, sent, { findPnx: FIND_OK, pnx: { login: [CODE_LINE], loginExit: 0, tokens: [SIGNED_OUT_LINE, tokenLine(TOKEN_A, NOW + 600_000)] } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'signin-start' })
+  await clock.settle()
+
+  expect((await ui.find({ type: 'Text', text: /^✗ / }))?.text).toMatch(/stopped before it finished/)
+  expect(await ui.find({ type: 'Text', text: /^connected to / })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('without pnx, Sign in says so and points to the API key; nothing is started', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  const spawned: (readonly string[])[] = []
+  stubWorld(on, sent, { spawned, findPnx: { stdout: JSON.stringify({ cli: '', version: '' }), until: Promise.resolve() } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'signin-start' })
+  await clock.settle()
+
+  expect((await ui.find({ type: 'Text', text: /^✗ / }))?.text).toMatch(/not installed.*API key/)
+  expect(await ui.find({ key: 'setup-key' })).toBeDefined()
+  expect(spawned.some(a => a[2] === 'login')).toBe(false)
+  await ui.unmount()
+})
+
+test('a sign-in made earlier connects again at start; its token is kept until a minute before it ends', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  const runs: (readonly string[])[] = []
+  stubWorld(on, sent, { runs, findPnx: FIND_OK, pnx: { tokens: [tokenLine(TOKEN_A, NOW + 600_000), SIGNED_OUT_LINE] } })
+  const tokenRuns = () => runs.filter(a => a[2] === 'token').length
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^connected to / }))?.text).toBe('connected to portal.example.test')
+  // After a restart nobody tells the pane an email: connected, not "as" anyone.
+  expect((await ui.find({ type: 'Text', text: /via sign-in/ }))?.text).toBe('connected via sign-in')
+  expect(tokenRuns()).toBe(1)
+  expect(sent.some(r => r.url.endsWith('/auth/api-key-token'))).toBe(false)
+
+  // Still fresh at 3 minutes (the detail is read again after 2): the same token, no new pnx call.
+  await clock.advance(180_000)
+  expect(tokenRuns()).toBe(1)
+  await ui.unmount()
+})
+
+test('when the sign-in has ended, the pane goes back to setup and says "Your sign-in ended. Sign in again."', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  stubWorld(on, sent, { findPnx: FIND_OK, pnx: { tokens: [tokenLine(TOKEN_A, NOW + 600_000), SIGNED_OUT_LINE] } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^GATEWAY$/ }))?.text).toBe('GATEWAY')
+
+  // Past the token's end: the next call asks pnx, which says signed out.
+  await clock.advance(10 * 60_000)
+
+  expect((await ui.find({ type: 'Text', text: /SET UP PLATFORMNEX/ }))?.text).toBe('SET UP PLATFORMNEX')
+  expect((await ui.find({ type: 'Text', text: /Your sign-in ended/ }))?.text).toMatch(/Your sign-in ended\. Sign in again\./)
+  expect((await ui.find({ key: 'signin-start' }))?.text).toBe('Sign in')
+  expect(await ui.find({ type: 'Text', text: /^GATEWAY$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Disconnect in sign-in mode runs pnx logout, clears the pane and does not touch a saved key', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  const runs: (readonly string[])[] = []
+  stubWorld(on, sent, { runs, findPnx: FIND_OK, pnx: { tokens: [tokenLine(TOKEN_A, NOW + 600_000)], logout: '{"event":"signed_out"}\n' } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'conn-open' })
+  // The CONNECTION panel offers Sign in too, and says what Disconnect does here.
+  expect(await ui.find({ key: 'signin-start' })).toBeDefined()
+  await ui.press({ key: 'disconnect' })
+  expect((await ui.find({ type: 'Text', text: /signs out on this machine/ }))?.text).toBeDefined()
+  await ui.press({ key: 'disconnect-yes' })
+  await clock.settle()
+
+  expect(runs.find(a => a[2] === 'logout')).toEqual(['node', '/pnx/cli.js', 'logout', '--json', '--catalog-url', `${BASE}/api/catalog`])
+  expect((await ui.find({ type: 'Text', text: /SET UP PLATFORMNEX/ }))?.text).toBe('SET UP PLATFORMNEX')
+  expect((await ui.find({ type: 'Text', text: /Signed out/ }))?.text).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^GATEWAY$/ })).toBeUndefined()
+  // Neither the plugin's settings nor anything else was rewritten for a key.
+  expect(runs.some(a => a.includes('configure'))).toBe(false)
+  await ui.unmount()
+})
+
+test('Disconnect says so when pnx could not end the sign-in', { options: SIGNIN_OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  stubWorld(on, sent, { findPnx: FIND_OK, pnx: { tokens: [tokenLine(TOKEN_A, NOW + 600_000)], logout: 'something went wrong\n' } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'conn-open' })
+  await ui.press({ key: 'disconnect' })
+  await ui.press({ key: 'disconnect-yes' })
+  await clock.settle()
+
+  expect((await ui.find({ type: 'Text', text: /could not end the sign-in/ }))?.text).toMatch(/Run pnx logout/)
+  expect((await ui.find({ type: 'Text', text: /SET UP PLATFORMNEX/ }))?.text).toBe('SET UP PLATFORMNEX')
+  await ui.unmount()
+})
+
+test('the API key path is untouched: it still trades the key, and the worker still gets it', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const sent: Sent[] = []
+  const spawned: (readonly string[])[] = []
+  const spawnEnv: (Record<string, string> | undefined)[] = []
+  stubWorld(on, sent, { spawned, spawnEnv, findPnx: { stdout: JSON.stringify({ cli: '/pnx/cli.js', version: MIN_PNX }), until: Promise.resolve() } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  expect((await ui.find({ type: 'Text', text: /^connected to / }))?.text).toBe('connected to portal.example.test')
+  expect(await ui.find({ type: 'Text', text: /via sign-in/ })).toBeUndefined()
+  expect(sent.some(r => r.url.endsWith('/auth/api-key-token'))).toBe(true)
+  // pnx 0.1.18 is enough for the key.
+  const worker = spawned.findIndex(a => a[2] === 'claude')
+  expect(worker).toBeGreaterThanOrEqual(0)
+  expect(spawnEnv[worker]).toEqual({ PNX_CATALOG_URL: `${BASE}/api/catalog`, PNX_API_KEY: KEY })
   await ui.unmount()
 })

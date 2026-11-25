@@ -111,11 +111,14 @@ export const FIND_NEEDS = [
  * Run with `node -e`: tells pnx-fast-dev the pnx dev cycles need (`.ensure-wanted`). Until it has it, pnx-fast-dev
  * checks at every Claude Code start instead of once a day, so an update or a release arrives at the next start.
  */
-export const WANT_PNX = [
-  "const p=require('path'),f=require('fs'),o=require('os');",
-  PNX_DIR,
-  `try{f.mkdirSync(d,{recursive:true});f.writeFileSync(p.join(d,'.ensure-wanted'),'${MIN_PNX}')}catch{}`,
-].join('')
+export const wantPnx = (min: string): string =>
+  [
+    "const p=require('path'),f=require('fs'),o=require('os');",
+    PNX_DIR,
+    `try{f.mkdirSync(d,{recursive:true});f.writeFileSync(p.join(d,'.ensure-wanted'),'${min}')}catch{}`,
+  ].join('')
+
+export const WANT_PNX = wantPnx(MIN_PNX)
 
 /** `released`: the newest pnx the registry had at pnx-fast-dev's last try, '' when unknown. */
 export type Needs = { node: string; git: boolean; gh: boolean; ghSignedIn: boolean; fastDevRan: boolean; problem: string; released: string }
