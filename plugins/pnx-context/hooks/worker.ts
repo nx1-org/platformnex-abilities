@@ -10,6 +10,8 @@ import type { CheckStep } from './api'
 
 /** The first pnx with `--auto-link` and one worker per machine. */
 export const MIN_PNX = '0.1.18'
+/** The first pnx with `pnx activity`, which the Dev cycles view reads. */
+export const MIN_ACTIVITY_PNX = '0.1.19'
 /** pnx's exit code when another worker already runs on this machine. */
 export const ALREADY_RUNNING_EXIT = 3
 /** How long to wait before trying again after the worker stopped or another window holds it. */
@@ -111,11 +113,16 @@ export const FIND_NEEDS = [
  * Run with `node -e`: tells pnx-fast-dev the pnx dev cycles need (`.ensure-wanted`). Until it has it, pnx-fast-dev
  * checks at every Claude Code start instead of once a day, so an update or a release arrives at the next start.
  */
-export const WANT_PNX = [
-  "const p=require('path'),f=require('fs'),o=require('os');",
-  PNX_DIR,
-  `try{f.mkdirSync(d,{recursive:true});f.writeFileSync(p.join(d,'.ensure-wanted'),'${MIN_PNX}')}catch{}`,
-].join('')
+const wantPnx = (version: string): string =>
+  [
+    "const p=require('path'),f=require('fs'),o=require('os');",
+    PNX_DIR,
+    `try{f.mkdirSync(d,{recursive:true});f.writeFileSync(p.join(d,'.ensure-wanted'),'${version}')}catch{}`,
+  ].join('')
+
+export const WANT_PNX = wantPnx(MIN_PNX)
+/** The same for a pnx that has `pnx activity`: asked once when the view finds pnx missing or older. */
+export const WANT_ACTIVITY_PNX = wantPnx(MIN_ACTIVITY_PNX)
 
 /** `released`: the newest pnx the registry had at pnx-fast-dev's last try, '' when unknown. */
 export type Needs = { node: string; git: boolean; gh: boolean; ghSignedIn: boolean; fastDevRan: boolean; problem: string; released: string }

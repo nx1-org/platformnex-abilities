@@ -37,6 +37,8 @@ import {
   type ParsedMatch,
   type ScannedRepo,
 } from './lib'
+import { badge, logLines, rowOf, visibleJobs } from './devcycle'
+import { POLL_MS, devCycles, forgetDevCycles, pollDevCycles, pollSoon } from './devcyclePoll'
 import { OWN_PREFIX, handoffUrl, parseAsk, pickActiveMatch, pushAsk, scrub } from './skills'
 import { ENVIRONMENTS, FIND_CLAUDE, PLUGIN_ID, apiKeysUrl, baseOf, configureInput, environmentOf, extractKey, type EnvironmentId } from './setup'
 import { ALREADY_RUNNING_EXIT, FIND_DEVICE, FIND_NEEDS, FIND_PNX, MIN_PNX, MISSING_RETRY_MS, RETRY_MS, WANT_PNX, catalogUrlOf, devCycleSteps, endedNote, isAtLeast, isTakingJobs, lineNote, parseDeviceId, parseFind, parseNeeds, sessionEndAction } from './worker'
@@ -490,6 +492,7 @@ const dropConnection = async ($: EngineInterface, cfg: Cfg, next: Cfg | undefine
   await update($, data, (): Data => ({ at: now, status: 'ok', repos: [] }))
   await update($, asks, (): Asks => ({ ...EMPTY_ASKS }))
   await setClaudeCode($, 'connecting')
+  await forgetDevCycles($)
   $.ui.status(undefined)
 }
 
@@ -781,6 +784,12 @@ export const register: Register = (on, options) => {
       void refresh($, activeCfg(), false).catch(() => undefined)
       keepWorker($, activeWorkerCfg())
     })
+    // Each source keeps its own pace; one not due is skipped.
+    $.clock.every(POLL_MS, () => {
+      const cfg = activeCfg()
+      const started = connection
+      if (cfg !== undefined) void read($, ui).then(u => pollDevCycles($, cfg, { isDevOpen: u.view === 'dev', isCurrent: () => started === connection, notify: (text, tone) => update($, ui, x => ({ ...x, notice: { text, tone, title: 'Dev cycle' } })) })).catch(() => undefined)
+    })
 
     return next(e)
   })
@@ -842,6 +851,7 @@ export const register: Register = (on, options) => {
     const d = await read($, data)
     const u = await read($, ui)
     const heard = await read($, asks)
+    const dc = await read($, devCycles)
     const cc = await read($, claudeCode)
     const columns = Math.max(24, e.props.bodyColumns ?? 40)
     // Room inside a panel: the border and one space of padding on each side.
@@ -1092,12 +1102,23 @@ export const register: Register = (on, options) => {
     const needs = current === undefined ? [] : nextItems(current.title ?? current.name, current.health, releases, now)
     // The view the person picked, else Live while a deploy runs and Next otherwise.
     const view: View = u.view ?? (releases.some(isDeploying) ? 'live' : 'next')
-    const VIEWS: { id: View; label: string }[] = [
+    const isDev = view === 'dev'
+    const devRows = visibleJobs(dc.jobs, dc.cloud, now)
+    const devLog = logLines(dc.events, u.logOpen === true ? 30 : 12, columns)
+    const devBadge = badge(dc.jobs, dc.cloud, u.devSeenAt, isDev, now)
+    // Names from the longest to the shortest; the strip takes the first set that fits (Environments needs 48 columns).
+    const viewsOf = (envs: string, dev: string): { id: View; label: string }[] => [
       { id: 'live', label: 'Live' },
       { id: 'next', label: needs.length === 0 ? 'Next' : `Next ${needs.length}` },
       { id: 'release', label: 'Release' },
-      { id: 'envs', label: columns >= 48 ? 'Environments' : 'Envs' },
+      { id: 'envs', label: envs },
+      { id: 'dev', label: devBadge === '' ? dev : `${dev} ${devBadge}` },
     ]
+    const stripOf = [viewsOf('Environments', 'Dev cycles'), viewsOf('Environments', 'Dev'), viewsOf('Envs', 'Dev cycles'), viewsOf('Envs', 'Dev')].filter((_, n) => n >= 2 || columns >= 48)
+    const fitsStrip = (vs: { label: string }[]) => vs.reduce((w, v, i) => w + lead(String(i + 1), v.label).length + 2, 0) <= columns - 2
+    const VIEWS = stripOf.find(fitsStrip) ?? stripOf[stripOf.length - 1]!
+    // Leaving the Dev cycles view marks what happened so far as seen (the ✕ badge clears).
+    const showView = (id: View) => update($, ui, x => ({ ...x, view: id, devSeenAt: x.view === 'dev' ? now : x.devSeenAt }))
     const row = (left: JSX.Element, right?: JSX.Element) => (
       <Box flexDirection="row" justifyContent="space-between">
         {left}
@@ -1291,6 +1312,34 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const devView = () => (
+      <Box flexDirection="column">
+        {devRows.length === 0 && <Text dimColor>No dev cycle running. Start one in PlatformNEX.</Text>}
+        {devRows.slice(0, 5).map(j => {
+          const r = rowOf(j, now, columns)
+
+          return (
+            <Box flexDirection="column" key={`dev-${j.source}-${j.id}`}>
+              {row(<Text color={r.tone}>{r.left}</Text>, <Text color={r.tone} dimColor={r.tone === undefined}>{r.right}</Text>)}
+              <Text dimColor>{r.sub}</Text>
+            </Box>
+          )
+        })}
+        {devRows.length > 5 && <Text dimColor>{`+${devRows.length - 5} more`}</Text>}
+        <Button key="log-toggle" plain hotkey="l" onPress={act(() => update($, ui, x => ({ ...x, logOpen: x.logOpen !== true })))}>
+          {lead('l', u.logOpen === true ? 'short log' : 'full log')}
+        </Button>
+        {devLog.map((l, n) => (
+          <Text key={`dev-log-${n}`} color={l.level === 'error' ? 'error' : l.level === 'warn' ? 'warning' : undefined} dimColor={l.level === 'info'}>
+            {l.text}
+          </Text>
+        ))}
+        {dc.local === 'old' && <Text dimColor>Update pnx for the live log on this machine</Text>}
+        {dc.local === 'failed' && <Text dimColor>Log unavailable on this machine</Text>}
+        {u.notice?.title === 'Dev cycle' && <Text color={u.notice.tone === 'error' ? 'error' : 'success'}>{cap(u.notice.text, columns * 2)}</Text>}
+      </Box>
+    )
+
     const checkStatus = checkState(u.check ?? { groups: [], isReady: false })
     const title = current === undefined ? 'PLATFORMNEX' : current.title ?? current.name
 
@@ -1314,6 +1363,7 @@ export const register: Register = (on, options) => {
                 // again. Dev cycles that are not running start again now, with what they need looked up afresh (after
                 // installing pnx or gh, say), not at the next retry. Running ones are left alone: a job may be under way.
                 forgetToken()
+                pollSoon()
                 if (stopWorker === undefined && activeWorkerCfg() !== undefined) {
                   nextWorkerTry = 0
                   await setClaudeCode($, 'connecting')
@@ -1348,7 +1398,7 @@ export const register: Register = (on, options) => {
           </Box>
         </Box>
         {/* The terminal draws each hotkey beside its icon (r: ⟳); elsewhere one dim line says what the icons do. */}
-        {!isTerminal && <Text dimColor>{cap(`r refresh · k check${u.connOpen === true ? '' : ' · s change'}`, columns)}</Text>}
+        {!isTerminal && <Text dimColor>{cap(`r refresh · k check${isDev ? ' · l log' : ''}${u.connOpen === true ? '' : ' · s change'}`, columns)}</Text>}
         <Text dimColor>{cap(`connected to ${envLabel}`, columns)}</Text>
         <Text dimColor>
           {cap(
@@ -1523,11 +1573,11 @@ export const register: Register = (on, options) => {
           </Box>
         )}
 
-        {u.notice !== undefined && (
+        {u.notice !== undefined && !(isDev && u.notice.title === 'Dev cycle') && (
           <Box flexDirection="column">
             {panel(
-              'Release',
-              u.notice.text.startsWith('Could not') ? 'error' : 'success',
+              u.notice.title ?? 'Release',
+              u.notice.tone ?? (u.notice.text.startsWith('Could not') ? 'error' : 'success'),
               undefined,
               <Box flexDirection="column">
                 <Text>{cap(u.notice.text, inner * 2)}</Text>
@@ -1567,18 +1617,20 @@ export const register: Register = (on, options) => {
         {active !== undefined && active.lookup === 'none' && <Text dimColor>Not in the PlatformNEX catalog, or not visible to you.</Text>}
         {active !== undefined && active.lookup === 'error' && <Text color="error">Couldn't look up this repo. Press ⟳ to try again.</Text>}
 
-        {/* The four views of the component: one row to pick, then the view alone. */}
-        {current !== undefined && active !== undefined && u.reposOpen !== true && (
+        {/* The views: one row to pick, then the view alone. The four of the component need one; Dev cycles does not. */}
+        {u.reposOpen !== true && (
           <Box flexDirection="column">
             <Box flexDirection="row" gap={2}>
-              {VIEWS.map((v, i) => (
-                <Button key={`view-${v.id}`} {...(v.id === view ? {} : { plain: true as const })} hotkey={String(i + 1)} onPress={act(() => update($, ui, x => ({ ...x, view: v.id })))}>
-                  {lead(String(i + 1), v.label)}
-                </Button>
-              ))}
+              {VIEWS.map((v, i) =>
+                (current !== undefined && active !== undefined) || v.id === 'dev' ? (
+                  <Button key={`view-${v.id}`} {...(v.id === view ? {} : { plain: true as const })} hotkey={String(i + 1)} onPress={act(() => showView(v.id))}>
+                    {lead(String(i + 1), v.label)}
+                  </Button>
+                ) : null,
+              )}
             </Box>
             {rule}
-            {view === 'live' ? liveView() : view === 'next' ? nextView() : view === 'release' ? releaseView(current, active) : envsView(current, active)}
+            {view === 'dev' ? devView() : current === undefined || active === undefined ? undefined : view === 'live' ? liveView() : view === 'next' ? nextView() : view === 'release' ? releaseView(current, active) : envsView(current, active)}
           </Box>
         )}
       </Box>
