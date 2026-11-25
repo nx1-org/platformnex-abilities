@@ -38,7 +38,7 @@ import {
   type ScannedRepo,
 } from './lib'
 import { badge, devStatus, logLines, rowOf, visibleJobs } from './devcycle'
-import { POLL_MS, devCycles, forgetDevCycles, pollDevCycles, pollSoon } from './devcyclePoll'
+import { POLL_MS, forgetDevCycles, pollDevCycles, pollSoon, readDevCycles } from './devcyclePoll'
 import { OWN_PREFIX, handoffUrl, parseAsk, pickActiveMatch, pushAsk, scrub } from './skills'
 import { ENVIRONMENTS, FIND_CLAUDE, PLUGIN_ID, apiKeysUrl, baseOf, configureInput, environmentOf, extractKey, type EnvironmentId } from './setup'
 import { ALREADY_RUNNING_EXIT, FIND_DEVICE, FIND_NEEDS, FIND_PNX, MIN_PNX, MISSING_RETRY_MS, RETRY_MS, WANT_PNX, catalogUrlOf, devCycleSteps, endedNote, isAtLeast, isTakingJobs, lineNote, parseDeviceId, parseFind, parseNeeds, sessionEndAction } from './worker'
@@ -851,7 +851,7 @@ export const register: Register = (on, options) => {
     const d = await read($, data)
     const u = await read($, ui)
     const heard = await read($, asks)
-    const dc = await read($, devCycles)
+    const dc = await readDevCycles($)
     const cc = await read($, claudeCode)
     const columns = Math.max(24, e.props.bodyColumns ?? 40)
     // Room inside a panel: the border and one space of padding on each side.

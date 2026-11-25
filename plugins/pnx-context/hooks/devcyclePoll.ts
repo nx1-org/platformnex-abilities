@@ -37,6 +37,11 @@ export function forgetDevCycles($: EngineInterface): Promise<unknown> {
   return update($, devCycles, () => EMPTY)
 }
 
+/** The view's reading of the atom. It lives here because the engine reads an atom only where the file defines it. */
+export function readDevCycles($: EngineInterface): Promise<DevCycles> {
+  return read($, devCycles)
+}
+
 async function readLocal($: EngineInterface, now: number): Promise<Pick<DevCycles, 'local' | 'jobs' | 'events'>> {
   if (pnx === undefined || now - pnx.at >= MISSING_RETRY_MS) {
     const found = await $.process.run(['node', '-e', FIND_PNX], { timeoutMs: 20_000 }).then(r => parseFind(r.stdout)).catch((): { cli?: string; version?: string } => ({}))
