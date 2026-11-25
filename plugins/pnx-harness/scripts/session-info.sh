@@ -6,13 +6,13 @@
 # Checks, each cheap and each bounded in time:
 #   pnx installed, new enough for `pnx dev setup`, and signed in
 #   kubectl's current context is not a production cluster
-#   this repository (only an ivedha-tech one) has the harness files the Improve check looks for
+#   this repository (only an nx1-org or ivedha-tech one) has the harness files the Improve check looks for
 #
 # Test seams: PNX_BIN, PNX_CONFIG, KUBECTL_BIN, PNX_HARNESS_ORG, CLAUDE_PROJECT_DIR.
 set -uo pipefail
 
-GUIDE="https://github.com/ivedha-tech/platformnex-abilities/blob/main/engineering-harness/docs/06-developer-setup.md"
-org="${PNX_HARNESS_ORG:-ivedha-tech}"
+GUIDE="https://github.com/nx1-org/platformnex-abilities/blob/main/engineering-harness/docs/06-developer-setup.md"
+orgs="${PNX_HARNESS_ORG:-nx1-org ivedha-tech}"
 root="${CLAUDE_PROJECT_DIR:-$PWD}"
 todo=()
 
@@ -68,8 +68,10 @@ fi
 # --- this repository ---
 if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
   origin="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
-  case "$origin" in
-    *github.com[:/]"$org"/*)
+  ours=""
+  for o in $orgs; do case "$origin" in *github.com[:/]"$o"/*) ours=1 ;; esac; done
+  case "$ours" in
+    1)
       top="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || echo "$root")"
       missing=0
       [ -f "$top/scripts/check-gates.sh" ] || missing=$((missing + 1))

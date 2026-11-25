@@ -10,7 +10,7 @@ Each time Claude Code opens or resumes in a repository, `pnx-harness` prints a s
 - **A list under "Still to set up"**: each bullet is one thing below. Fix them in any order.
 - **No notice at all**: the plugin's hooks are not loaded for you, so the guard hooks are off too. The plugin has to be enabled in the organisation's managed settings; ask the Claude Code administrator. Installing it by hand may not be enough.
 
-The notice checks three things: `pnx` (installed, new enough, signed in), the current `kubectl` context (not production), and, in an `ivedha-tech` repository, the seven harness items.
+The notice checks three things: `pnx` (installed, new enough, signed in), the current `kubectl` context (not production), and, in an `nx1-org` or `ivedha-tech` repository, the seven harness items.
 
 ## The `pnx` command line
 
