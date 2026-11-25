@@ -1,7 +1,7 @@
 {
   "name": "pnx-harness",
   "description": "The PlatformNEX layer of the engineering harness: guard hooks that keep agents off the release path, secrets and guardrail files; gate skills for the idea brief, PRD, ADR, threat model, pull request and release readiness; a compliance reviewer; and a guide to reading release, alert and cost state through the platformnex MCP server.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": { "name": "ivedha" },
   "keywords": ["platformnex", "pnx", "harness", "guardrails", "release"]
 }

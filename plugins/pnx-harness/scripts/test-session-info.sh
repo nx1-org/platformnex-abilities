@@ -45,7 +45,7 @@ repo() { # repo <dir> <origin-url> [all]  : a git repo, optionally with every ha
   fi
   echo "$d"
 }
-good_repo="$(repo good git@github.com:ivedha-tech/api.git all)"
+good_repo="$(repo good git@github.com:nx1-org/api.git all)"
 bare_repo="$(repo bare git@github.com:ivedha-tech/api.git)"
 other_repo="$(repo other git@github.com:someone/else.git)"
 mkdir -p "$tmp/nogit"
@@ -70,7 +70,7 @@ has 'guard hooks are active'; check "says the guard hooks are active" $?
 
 run missing-pnx PNX_BIN="$tmp/does-not-exist"
 has 'pnx isn’t installed'; check "pnx missing is named" $?
-has 'Guide: https://github.com/ivedha-tech/platformnex-abilities'; check "a missing item adds the guide link" $?
+has 'Guide: https://github.com/nx1-org/platformnex-abilities'; check "a missing item adds the guide link" $?
 [ $rc -eq 0 ]; check "still exits 0" $?
 
 run old-pnx PNX_BIN="$tmp/pnx-old"

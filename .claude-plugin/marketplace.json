@@ -82,13 +82,13 @@
       "name": "pnx-fast-dev",
       "source": "./plugins/pnx-fast-dev",
       "description": "PlatformNEX fast development: keeps the pnx CLI installed and current (SessionStart, once a day, in the background) and teaches Claude to use pnx dev intercept, connect and env against a non-production environment, preview pull requests (pnx dev preview) reach its databases (pnx dev db), and set up and run all of a System's components (pnx dev setup, pnx dev run).",
-      "version": "1.2.5"
+      "version": "1.2.6"
     },
     {
       "name": "pnx-harness",
       "source": "./plugins/pnx-harness",
       "description": "PlatformNEX layer of the engineering harness: guard hooks that keep agents off the release path, secrets and guardrail files (PreToolUse on Bash and edits; formats Python after an edit), gate skills (idea brief, PRD, ADR, threat model, pull request, release readiness), a compliance reviewer, and a guide to reading release, alert and cost state through the platformnex MCP server.",
-      "version": "1.0.2"
+      "version": "1.0.3"
     },
     {
       "name": "harness-core",
