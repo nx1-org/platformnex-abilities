@@ -154,8 +154,14 @@ export function snapshots($: EngineInterface, cfg: Cfg, keys: { domain: string; 
   return call($, cfg, 'POST', '/api/aggregator/dashboard/batch', { keys })
 }
 
-export function openReleases($: EngineInterface, cfg: Cfg, entityRef: string) {
-  return call($, cfg, 'GET', `/api/catalog/releases?entityRef=${encodeURIComponent(entityRef)}&open=true&limit=5`)
+/** The latest release sessions of a component, open and finished, newest first. */
+export function recentReleases($: EngineInterface, cfg: Cfg, entityRef: string) {
+  return call($, cfg, 'GET', `/api/catalog/releases?entityRef=${encodeURIComponent(entityRef)}&limit=30`)
+}
+
+/** One release session with its phases. */
+export function releaseDetail($: EngineInterface, cfg: Cfg, id: string) {
+  return call($, cfg, 'GET', `/api/catalog/releases/${encodeURIComponent(id)}`)
 }
 
 /** Opens a DRAFT release session. This is the only write the mod makes; it never calls deploy. */
