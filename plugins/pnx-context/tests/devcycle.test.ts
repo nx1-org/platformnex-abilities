@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { badge, finishedNotice, logLines, parseActivity, parseLive, rowOf, visibleJobs } from '../hooks/devcycle'
+import { badge, devStatus, finishedNotice, logLines, parseActivity, parseLive, rowOf, visibleJobs } from '../hooks/devcycle'
 import { MIN_ACTIVITY_PNX, WANT_ACTIVITY_PNX, WANT_PNX, isAtLeast } from '../hooks/worker'
 import type { DevJob } from '../types'
 
@@ -180,4 +180,16 @@ test('the view badge counts running jobs, flags a failure not yet seen, and is e
   expect(badge([failed], [], undefined, true, NOW)).toBe('')
   expect(badge([job({ id: 'i', state: 'interrupted', startedAt: NOW - 1000 })], [], undefined, false, NOW)).toBe('✕')
   expect(badge([job({ id: 'd', state: 'done', endedAt: NOW - 1000 }), job({ id: 'x', state: 'cancelled', endedAt: NOW - 1000 })], [], undefined, false, NOW)).toBe('')
+})
+
+test('the view says why the worker is not taking jobs, and says nothing running only when it is online', () => {
+  const at = (cc: { status: 'connecting' | 'online' | 'offline'; note?: string }, isOff = false) => devStatus({ isOff, cc, width: 60 })
+  expect(at({ status: 'online' })).toBeUndefined()
+  expect(at({ status: 'connecting' })?.text).toMatch(/Connecting/)
+  expect(at({ status: 'offline' }, true)?.text).toMatch(/turned off/)
+  expect(at({ status: 'offline', note: 'pnx is not installed' })).toEqual({ text: '○ Not connected on this machine: pnx is not installed. Press k for the full check.', tone: 'warning' })
+  expect(at({ status: 'offline' })?.text).toBe('○ Not connected on this machine. Press k for the full check.')
+  // A note that looks like a secret is never shown; the long note is capped.
+  expect(at({ status: 'offline', note: 'bad key pnx_abcdef123456' })?.text).not.toMatch(/pnx_/)
+  expect((at({ status: 'offline', note: 'x'.repeat(500) })?.text.length ?? 999) < 200).toBe(true)
 })

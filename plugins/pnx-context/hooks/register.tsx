@@ -37,7 +37,7 @@ import {
   type ParsedMatch,
   type ScannedRepo,
 } from './lib'
-import { badge, logLines, rowOf, visibleJobs } from './devcycle'
+import { badge, devStatus, logLines, rowOf, visibleJobs } from './devcycle'
 import { POLL_MS, devCycles, forgetDevCycles, pollDevCycles, pollSoon } from './devcyclePoll'
 import { OWN_PREFIX, handoffUrl, parseAsk, pickActiveMatch, pushAsk, scrub } from './skills'
 import { ENVIRONMENTS, FIND_CLAUDE, PLUGIN_ID, apiKeysUrl, baseOf, configureInput, environmentOf, extractKey, type EnvironmentId } from './setup'
@@ -1312,9 +1312,11 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const devState = devStatus({ isOff: options['devCycles'] === 'off', cc, width: columns })
     const devView = () => (
       <Box flexDirection="column">
-        {devRows.length === 0 && <Text dimColor>No dev cycle running. Start one in PlatformNEX.</Text>}
+        {devState !== undefined && <Text color={devState.tone} dimColor={devState.tone === undefined}>{devState.text}</Text>}
+        {devState === undefined && devRows.length === 0 && <Text dimColor>No dev cycle running. Start one in PlatformNEX.</Text>}
         {devRows.slice(0, 5).map(j => {
           const r = rowOf(j, now, columns)
 
