@@ -1,46 +1,53 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { ApiFailure, KEY_REFUSED, byRepo, call, checkAccess, createDraftRelease, forgetToken, mcpCall, openReleases, signIn, snapshots, systemHealth, type Cfg, type CheckStep } from './api'
+import { ApiFailure, KEY_REFUSED, byRepo, call, checkAccess, createDraftRelease, forgetToken, mcpCall, recentReleases, releaseDetail, signIn, systemHealth, type Cfg, type CheckStep } from './api'
 import {
   ago,
+  bar,
   baseName,
-  buildTone,
   cap,
-  compact,
   cleanRemote,
-  daysAtRisk,
   dedupeByRemote,
+  deploySteps,
+  envRows,
   healthLabel,
   healthTone,
   isAbsolutePath,
+  isDeploying,
+  isOpenRelease,
   isRepoUrl,
+  liveRelease,
+  nextItems,
   normalizePath,
   normalizeRepoUrl,
-  parseBuilds,
   parseByRepo,
   parseHealth,
+  parsePhases,
   parseReleases,
-  passRate,
-  parseSeries,
+  phaseLabel,
   releaseBlock,
+  reviewProgress,
+  reviewRelease,
   rootContaining,
   safeBaseUrl,
   scannedRepo,
-  spark,
   systemPath,
+  took,
   type ParsedMatch,
   type ScannedRepo,
 } from './lib'
 import { OWN_PREFIX, handoffUrl, parseAsk, pickActiveMatch, pushAsk, scrub } from './skills'
 import { ENVIRONMENTS, FIND_CLAUDE, PLUGIN_ID, apiKeysUrl, baseOf, configureInput, environmentOf, extractKey, type EnvironmentId } from './setup'
 import { ALREADY_RUNNING_EXIT, FIND_DEVICE, FIND_NEEDS, FIND_PNX, MIN_PNX, MISSING_RETRY_MS, RETRY_MS, WANT_PNX, catalogUrlOf, devCycleSteps, endedNote, isAtLeast, isTakingJobs, lineNote, parseDeviceId, parseFind, parseNeeds, sessionEndAction } from './worker'
-import type { Ask, Asks, CheckGroup, ClaudeCode, Data, Match, RepoView, Ui } from '../types'
+import type { Ask, Asks, CheckGroup, ClaudeCode, Data, Match, Release, RepoView, Ui, View } from '../types'
 
 const PANE = 'pnx-context'
 const TITLE = 'PlatformNEX'
 const TICK_MS = 15_000
 const DETAIL_MS = 120_000
+// While a deploy runs its release is read again this often; everything else keeps DETAIL_MS.
+const LIVE_MS = 15_000
 const LOOKUP_MS = 30 * 60_000
 const LOOKUP_RETRY_MS = 60_000
 const SCAN_MS = 10 * 60_000
@@ -48,15 +55,14 @@ const MAX_LOOKUPS = 40
 const MAX_MATCHES = 3
 const PAGE_SIZE = 8
 // Width of the label column in the header's two status rows (✓ PlatformNEX, ● Dev cycles), so their values line up.
-const STATUS_LABEL = 16
 
 const EMPTY_DATA: Data = { at: 0, status: 'unconfigured', repos: [] }
 const EMPTY_UI: Ui = {}
 const EMPTY_ASKS: Asks = { items: [] }
 
 // Change a tag when the stored fields change: it declines what an earlier version stored.
-const data = atom({ plugin: 'pnx-context', key: 'data' } as const, EMPTY_DATA, { shape: 'data-2' })
-const ui = atom({ plugin: 'pnx-context', key: 'ui' } as const, EMPTY_UI, { shape: 'ui-6' })
+const data = atom({ plugin: 'pnx-context', key: 'data' } as const, EMPTY_DATA, { shape: 'data-3' })
+const ui = atom({ plugin: 'pnx-context', key: 'ui' } as const, EMPTY_UI, { shape: 'ui-7' })
 // The change plans Claude asked for lately, cut down to what the pane draws.
 const asks = atom({ plugin: 'pnx-context', key: 'asks' } as const, EMPTY_ASKS, { shape: 'asks-2' })
 // Whether this machine's Claude Code takes dev-cycle jobs now (one line in the pane), and why the last try stopped (for the check).
@@ -276,38 +282,45 @@ const lookup = async ($: EngineInterface, cfg: Cfg, remote: string, force: boole
   }
 }
 
+/** The component's latest releases, with the phases of the one the Release view shows (one more read, only then). */
+const loadReleases = async ($: EngineInterface, cfg: Cfg, entityRef: string): Promise<Release[]> => {
+  const list = parseReleases((await recentReleases($, cfg, entityRef)).data)
+  const shown = reviewRelease(list)
+  if (shown === undefined) return list
+  const phases = await releaseDetail($, cfg, shown.id).then(reply => parsePhases(reply.data)).catch(() => undefined)
+
+  return list.map(r => (r.id === shown.id ? { ...r, phases } : r))
+}
+
 const loadDetail = async ($: EngineInterface, cfg: Cfg, match: ParsedMatch, force: boolean, started: number): Promise<Match> => {
   const now = await $.clock.now()
   const known = details.get(match.entityRef)
-  if (!force && known !== undefined && now - known.at < DETAIL_MS) return known.match
+  if (!force && known !== undefined && now - known.at < DETAIL_MS) {
+    // A deploy under way moves faster than the rest: only its releases are read again.
+    const isLive = (known.match.releases ?? []).some(isDeploying)
+    if (!isLive || now - (known.match.releasesAt ?? 0) < LIVE_MS) return known.match
+    const releases = await loadReleases($, cfg, match.entityRef).catch(() => undefined)
+    const next: Match = releases === undefined ? known.match : { ...known.match, releases, releasesAt: now }
+    if (started === connection) details.set(match.entityRef, { at: known.at, match: next })
+
+    return next
+  }
 
   const out: Match = { ...match, detailAt: now }
   const notes: string[] = []
   const system = match.systemRefs.map(systemPath).find((p): p is string => p !== undefined)
-  const [health, snaps, releases] = await Promise.allSettled([
+  const [health, releases] = await Promise.allSettled([
     system === undefined ? Promise.reject(new ApiFailure('not part of a System')) : systemHealth($, cfg, system),
-    snapshots($, cfg, [
-      { domain: 'devops', resourceType: 'pipelines', resourceKey: match.entityRef },
-      { domain: 'sre', resourceType: 'metrics-requests', resourceKey: match.entityRef },
-    ]),
-    openReleases($, cfg, match.entityRef),
+    loadReleases($, cfg, match.entityRef),
   ])
 
   if (health.status === 'fulfilled') out.health = parseHealth(health.value.data, match.entityRef)
   else notes.push(`health: ${failure(health.reason)}`)
 
-  if (snaps.status === 'fulfilled') {
-    const entries = (snaps.value.data as { entries?: unknown } | undefined)?.entries
-    const at = (i: number): { payload?: unknown; status?: unknown } | undefined => (Array.isArray(entries) ? (entries[i] as { payload?: unknown; status?: unknown } | null) ?? undefined : undefined)
-    const builds = at(0)
-    const metrics = at(1)
-    out.builds = builds?.payload === undefined ? undefined : parseBuilds(builds.payload)
-    const requests = metrics?.payload === undefined ? [] : parseSeries(metrics.payload)
-    out.requests = requests.length === 0 ? undefined : requests
-  } else notes.push(`cached data: ${failure(snaps.reason)}`)
-
-  if (releases.status === 'fulfilled') out.releases = parseReleases(releases.value.data)
-  else notes.push(`releases: ${failure(releases.reason)}`)
+  if (releases.status === 'fulfilled') {
+    out.releases = releases.value
+    out.releasesAt = now
+  } else notes.push(`releases: ${failure(releases.reason)}`)
 
   out.detailNote = notes.length === 0 ? undefined : cap(notes.join('; '), 160)
   if (started === connection) details.set(match.entityRef, { at: now, match: out })
@@ -525,7 +538,7 @@ const portalLink = (cfg: Cfg, entityRef: string, sessionId: string): string | un
 const confirmDraft = async ($: EngineInterface, cfg: Cfg, pending: NonNullable<Ui['pending']>): Promise<void> => {
   const started = connection
   try {
-    const open = parseReleases((await openReleases($, cfg, pending.entityRef)).data)
+    const open = parseReleases((await recentReleases($, cfg, pending.entityRef)).data).filter(isOpenRelease)
     const existing = open.find(r => r.environment === pending.environmentName)
     if (existing !== undefined) {
       await update($, ui, u => ({ ...u, pending: undefined, notice: { text: `A release to ${pending.environmentName} is already open (${existing.status}).`, url: portalLink(cfg, pending.entityRef, existing.id) } }))
@@ -833,8 +846,6 @@ export const register: Register = (on, options) => {
     const columns = Math.max(24, e.props.bodyColumns ?? 40)
     // Room inside a panel: the border and one space of padding on each side.
     const inner = Math.max(16, columns - 4)
-    // The short notes beside the gauges need room; narrow panes drop them.
-    const roomy = inner >= 46
     const now = await $.clock.now()
     const act = (run: () => Promise<unknown>) => () => void run().catch(() => undefined)
     const rule = <Text dimColor>{'─'.repeat(Math.max(10, columns))}</Text>
@@ -1075,64 +1086,151 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const strip = (values: string[], tone: (v: string) => string) => (
-      <Box flexDirection="row">
-        {values.map(v => (
-          <Text color={tone(v)}>█</Text>
-        ))}
-      </Box>
-    )
-    const lane = (label: string, content: JSX.Element, note: string | undefined) => (
+    const releases = current?.releases ?? []
+    const live = liveRelease(releases, now)
+    const review = reviewRelease(releases)
+    const needs = current === undefined ? [] : nextItems(current.title ?? current.name, current.health, releases, now)
+    // The view the person picked, else Live while a deploy runs and Next otherwise.
+    const view: View = u.view ?? (releases.some(isDeploying) ? 'live' : 'next')
+    const VIEWS: { id: View; label: string }[] = [
+      { id: 'live', label: 'Live' },
+      { id: 'next', label: needs.length === 0 ? 'Next' : `Next ${needs.length}` },
+      { id: 'release', label: 'Release' },
+      { id: 'envs', label: columns >= 48 ? 'Environments' : 'Envs' },
+    ]
+    const row = (left: JSX.Element, right?: JSX.Element) => (
       <Box flexDirection="row" justifyContent="space-between">
-        <Box flexDirection="row">
-          <Text dimColor>{label.padEnd(12)}</Text>
-          {content}
-        </Box>
-        {roomy && note !== undefined && <Text dimColor>{note}</Text>}
+        {left}
+        {right}
       </Box>
     )
+    const releaseLink = (r: Release, label: string) => {
+      const url = current === undefined ? undefined : portalLink(cfg, current.entityRef, r.id)
 
-    const componentPanel = (m: Match) => {
-      const status = m.health?.status ?? 'unknown'
-      const accent = healthTone(status)
-      const risky = m.health === undefined ? 0 : daysAtRisk(m.health.history)
-      const rate = m.builds === undefined ? undefined : passRate(m.builds)
+      return url === undefined ? undefined : <Link href={url}>{`↗ ${label}`}</Link>
+    }
+    const target = (r: Release): string => [r.kind !== undefined && r.kind !== 'release' ? r.kind : undefined, r.target, r.sha].filter((x): x is string => x !== undefined).join(' · ')
+    // Puts a line into the chat as a prompt of its own; nothing is sent to PlatformNEX.
+    const ask = (text: string) => act(async () => void (await $.prompt.submit({ text })))
 
-      return panel(
-        (m.title ?? m.name).toUpperCase(),
-        accent,
-        <Text color={accent}>● {healthLabel(status)}</Text>,
+    const liveView = () => {
+      if (live === undefined) return <Text dimColor>No deploy running.</Text>
+      const where = live.environment ?? 'an environment'
+      const isFailed = live.status === 'failed'
+      const title = live.status === 'succeeded' ? `Deployed to ${where}` : isFailed ? `Deploy to ${where} failed` : live.status === 'awaiting_approval' ? `Waiting for approval · ${where}` : `Deploying to ${where}`
+      const when = live.completedAt !== undefined ? ago(live.completedAt, now) : took(live.tagPushedAt, now)
+      const failed = needs.find(n => n.id === `failed-${live.id}`)
+
+      return (
         <Box flexDirection="column">
-          <Box flexDirection="row" justifyContent="space-between">
-            <Text dimColor>{cap(m.systemRefs.map(s => s.replace(/^system:/, '')).join(', ') || 'no System', Math.max(10, inner - 24))}</Text>
-            {m.health?.computedAt !== undefined && <Text dimColor>updated {ago(m.health.computedAt, now)}</Text>}
-          </Box>
-          {((m.health?.history.length ?? 0) > 0 || (m.builds?.length ?? 0) > 0 || m.requests !== undefined) && <Text> </Text>}
-          {m.health !== undefined && m.health.history.length > 0 && lane(`health ${m.health.history.length}d`, strip(m.health.history, healthTone), risky === 0 ? 'no days at risk' : `${risky} day${risky === 1 ? '' : 's'} at risk`)}
-          {m.builds !== undefined && m.builds.length > 0 && lane(`builds ×${m.builds.length}`, strip(m.builds, buildTone), rate === undefined ? undefined : `${rate}% passing`)}
-          {m.requests !== undefined && lane('requests', <Text color="claude">{spark(m.requests)}</Text>, `peak ${compact(Math.max(...m.requests))}`)}
-          {(m.health?.reasons.length ?? 0) > 0 && <Text> </Text>}
-          {(m.health?.reasons ?? []).map(r => (
-            <Text color={accent === 'success' ? undefined : accent}>{cap(`⚠ ${r}`, inner)}</Text>
-          ))}
-          {m.detailNote !== undefined && <Text dimColor>{cap(m.detailNote, inner * 2)}</Text>}
-        </Box>,
+          {row(<Text bold color={isFailed ? 'error' : undefined}>{cap(title, Math.max(12, columns - 12))}</Text>, <Text dimColor>{when}</Text>)}
+          {target(live) !== '' && <Text dimColor>{cap(target(live), columns)}</Text>}
+          <Text> </Text>
+          {deploySteps(live).map(st =>
+            row(
+              <Box flexDirection="row" key={`step-${st.label}`}>
+                <Text color={st.state === 'done' ? 'success' : st.state === 'now' ? 'warning' : st.state === 'failed' ? 'error' : undefined} dimColor={st.state === 'todo'}>
+                  {st.state === 'done' ? '✓ ' : st.state === 'now' ? '● ' : st.state === 'failed' ? '✗ ' : '○ '}
+                </Text>
+                <Text bold={st.state === 'now'} dimColor={st.state === 'todo'}>
+                  {st.label}
+                </Text>
+              </Box>,
+              st.note === undefined ? undefined : <Text color={st.state === 'failed' ? 'error' : st.state === 'now' ? 'warning' : undefined}>{st.note}</Text>,
+            ),
+          )}
+          {isFailed && live.outcome !== undefined && <Text dimColor>{cap(live.outcome, columns * 2)}</Text>}
+          <Text> </Text>
+          {failed !== undefined && failed.action.kind === 'prompt' && (
+            <Button key="live-fix" variant="primary" hotkey="f" onPress={ask(failed.action.text)}>
+              {lead('f', failed.action.label)}
+            </Button>
+          )}
+          {releaseLink(live, 'logs and details')}
+        </Box>
       )
     }
 
-    const releasePanel = (m: Match, repo: RepoView) => {
-      const open = m.releases ?? []
-      const choices = m.environments.map(env => ({ env, block: releaseBlock(env, repo.branch) }))
+    const SHOWN = 3
+    const nextView = () => {
+      if (needs.length === 0) return <Text color="success">✓ Nothing needs you</Text>
 
-      return panel(
-        'RELEASES',
-        'claude',
-        <Text dimColor>{open.length} open</Text>,
+      return (
         <Box flexDirection="column">
-          {open.length === 0 && <Text dimColor>No open releases</Text>}
-          {open.map(r => (
-            <Text>{cap(`${r.environment ?? 'environment'} · ${r.status}${r.target === undefined ? '' : ` · ${r.target}`}`, inner)}</Text>
-          ))}
+          {needs.slice(0, SHOWN).map((item, n) => {
+            const key = String.fromCharCode(97 + n)
+            const action = item.action
+
+            return (
+              <Box flexDirection="column" key={`next-${item.id}`}>
+                <Box flexDirection="row">
+                  <Text color={item.tone}>{item.tone === 'error' ? '✗ ' : '⚠ '}</Text>
+                  <Text bold>{cap(item.title, Math.max(12, columns - 2) * 2)}</Text>
+                </Box>
+                {item.detail !== undefined && <Text dimColor>{cap(`  ${item.detail}`, columns * 2)}</Text>}
+                <Box flexDirection="row">
+                  <Text>{'  '}</Text>
+                  {action.kind === 'prompt' ? (
+                    <Button key={`next-act-${item.id}`} {...(n === 0 ? { variant: 'primary' as const } : {})} hotkey={key} onPress={ask(action.text)}>
+                      {lead(key, action.label)}
+                    </Button>
+                  ) : (
+                    releaseLink({ id: action.releaseId, status: '' }, action.label)
+                  )}
+                </Box>
+                {n < Math.min(SHOWN, needs.length) - 1 && <Text> </Text>}
+              </Box>
+            )
+          })}
+          {needs.length > SHOWN && <Text dimColor>{`+${needs.length - SHOWN} more`}</Text>}
+        </Box>
+      )
+    }
+
+    const releaseView = (m: Match, repo: RepoView) => {
+      const choices = m.environments.map(env => ({ env, block: releaseBlock(env, repo.branch) }))
+      const progress = review?.phases === undefined ? undefined : reviewProgress(review.phases)
+      const step = progress?.current
+
+      return (
+        <Box flexDirection="column">
+          {review === undefined && <Text dimColor>No open release.</Text>}
+          {review !== undefined && (
+            <Box flexDirection="column">
+              {row(<Text bold>{cap(`Release to ${review.environment ?? 'an environment'}`, Math.max(12, columns - 20))}</Text>, <Text color="warning">{review.status.replace(/_/g, ' ')}</Text>)}
+              {target(review) !== '' && <Text dimColor>{cap(target(review), columns)}</Text>}
+              <Text> </Text>
+              {progress !== undefined && progress.total > 0 && (
+                <Box flexDirection="column">
+                  <Box flexDirection="row">
+                    <Text color="success">{bar(progress.done, progress.total).replace(/▱/g, '')}</Text>
+                    <Text dimColor>{`${bar(progress.done, progress.total).replace(/▰/g, '')} ${progress.done} of ${progress.total}`}</Text>
+                  </Box>
+                  <Text> </Text>
+                  {progress.done > 0 && (
+                    <Box flexDirection="row">
+                      <Text color="success">✓ </Text>
+                      <Text>{`${progress.done} phase${progress.done === 1 ? '' : 's'} reviewed`}</Text>
+                    </Box>
+                  )}
+                  {step !== undefined &&
+                    row(
+                      <Box flexDirection="row">
+                        <Text color="warning">● </Text>
+                        <Text bold>{phaseLabel(step.phase)}</Text>
+                      </Box>,
+                      <Text color={step.status === 'stale' ? 'error' : 'warning'}>{step.status === 'stale' ? 'stale' : step.status === 'computed' ? 'to review' : 'not ready yet'}</Text>,
+                    )}
+                  {step?.staleReason !== undefined && <Text dimColor>{cap(`  ${step.staleReason}`, columns * 2)}</Text>}
+                  {progress.rest.length > 0 && <Text dimColor>{cap(`○ ${progress.rest.map(p => phaseLabel(p.phase)).join(' · ')}`, columns * 2)}</Text>}
+                  {step === undefined && <Text color="success">All phases reviewed.</Text>}
+                </Box>
+              )}
+              {progress === undefined && review.currentPhase !== undefined && <Text>{`at ${phaseLabel(review.currentPhase)}`}</Text>}
+              <Text> </Text>
+              {releaseLink(review, 'open release')}
+            </Box>
+          )}
           <Text> </Text>
           <Box flexDirection="row" flexWrap="wrap" gap={1}>
             <Text dimColor>open a draft:</Text>
@@ -1153,18 +1251,58 @@ export const register: Register = (on, options) => {
             .map(({ env, block }) => (
               <Text dimColor>{cap(`${env.name}: ${env.isProduction ? 'in the portal' : block}`, inner)}</Text>
             ))}
-        </Box>,
+        </Box>
+      )
+    }
+
+    const envsView = (m: Match, repo: RepoView) => {
+      const rows = envRows(m.environments, releases)
+      const wide = Math.max(8, ...rows.map(r => r.name.length), 'your branch'.length) + 2
+
+      return (
+        <Box flexDirection="column">
+          {repo.branch !== undefined &&
+            row(
+              <Box flexDirection="row">
+                <Text color="claude">◆ </Text>
+                <Text bold>{'your branch'.padEnd(wide)}</Text>
+                <Text>{repo.head ?? ''}</Text>
+              </Box>,
+              <Text dimColor>{cap(repo.branch, Math.max(8, columns - wide - 12))}</Text>,
+            )}
+          {rows.map(r =>
+            row(
+              <Box flexDirection="row" key={`env-row-${r.name}`}>
+                <Text color={r.open !== undefined ? 'warning' : r.target !== undefined ? 'success' : undefined} dimColor={r.open === undefined && r.target === undefined}>
+                  {r.open !== undefined ? '◐ ' : r.target !== undefined ? '● ' : '○ '}
+                </Text>
+                <Text bold>{cap(r.name, wide - 1).padEnd(wide)}</Text>
+                <Text>{cap(r.target ?? '', 18)}</Text>
+              </Box>,
+              <Text color={r.open !== undefined ? 'warning' : undefined} dimColor={r.open === undefined}>
+                {r.open !== undefined ? `release ${r.open.status.replace(/_/g, ' ')}` : r.at !== undefined ? ago(r.at, now) : 'no release yet'}
+              </Text>,
+            ),
+          )}
+          {rows.length === 0 && <Text dimColor>No environments set up.</Text>}
+          <Text> </Text>
+          <Text dimColor>● deployed · ◐ release open · ○ nothing yet</Text>
+        </Box>
       )
     }
 
     const checkStatus = checkState(u.check ?? { groups: [], isReady: false })
+    const title = current === undefined ? 'PLATFORMNEX' : current.title ?? current.name
 
     return (
       <Box flexDirection="column">
-        {/* Header: the title on the left, icon buttons on the right (one row at any width); then the connection, then
-            under a rule the repository in view. */}
+        {/* Header: the component and its health on the left, icon buttons on the right; under it, dim, which
+            PlatformNEX, then which repository and branch and how fresh. Problems only below that: an error, dev cycles offline. */}
         <Box flexDirection="row" justifyContent="space-between">
-          <Text bold>PLATFORMNEX</Text>
+          <Box flexDirection="row">
+            <Text bold>{cap(title, Math.max(10, columns - 14)).toUpperCase()}</Text>
+            {current !== undefined && <Text color={healthTone(currentStatus)}>{` ● ${healthLabel(currentStatus)}`}</Text>}
+          </Box>
           <Box flexDirection="row" gap={1}>
             <Button
               key="refresh"
@@ -1211,48 +1349,37 @@ export const register: Register = (on, options) => {
         </Box>
         {/* The terminal draws each hotkey beside its icon (r: ⟳); elsewhere one dim line says what the icons do. */}
         {!isTerminal && <Text dimColor>{cap(`r refresh · k check${u.connOpen === true ? '' : ' · s change'}`, columns)}</Text>}
-        {/* Two things that can fail apart: Claude Code reaching PlatformNEX with the key, and PlatformNEX reaching this
-            Claude Code for dev-cycle jobs. Neither depends on the repository. */}
-        <Box flexDirection="row">
-          <Text color="success">{'✓ PlatformNEX'.padEnd(STATUS_LABEL)}</Text>
-          <Text color="success">{cap(`connected to ${envLabel}`, Math.max(8, columns - STATUS_LABEL))}</Text>
-        </Box>
+        <Text dimColor>{cap(`connected to ${envLabel}`, columns)}</Text>
+        <Text dimColor>
+          {cap(
+            `${active === undefined ? '' : `${active.name}${active.branch === undefined ? '' : ` · ${cap(active.branch, 30)}`} · `}${matched} of ${d.repos.length} repos · ${u.isRefreshing === true ? 'refreshing…' : `updated ${ago(d.at, now)}`}`,
+            columns * 2,
+          )}
+        </Text>
         {d.status === 'error' && d.error !== undefined && <Text color="error">{cap(d.error, columns * 2)}</Text>}
-        {options['devCycles'] !== 'off' && (
-          <Box flexDirection="row">
-            <Text color={cc.status === 'online' ? 'success' : cc.status === 'offline' ? 'warning' : undefined} dimColor={cc.status === 'connecting'}>
-              {`${cc.status === 'online' ? '●' : '○'} Dev cycles`.padEnd(STATUS_LABEL)}
-            </Text>
-            <Text color={cc.status === 'online' ? 'success' : cc.status === 'offline' ? 'warning' : undefined} dimColor={cc.status === 'connecting'}>
-              {cap(
-                cc.status === 'online' ? 'this Claude Code is online' : cc.status === 'offline' ? `offline · ${isTerminal ? 'k' : 'press k'} to see why` : 'connecting this Claude Code…',
-                Math.max(8, columns - STATUS_LABEL) * 2,
-              )}
-            </Text>
+        {options['devCycles'] !== 'off' && cc.status === 'offline' && <Text color="warning">{cap(`○ Dev cycles offline · ${isTerminal ? 'k' : 'press k'} to see why`, columns * 2)}</Text>}
+        {current?.detailNote !== undefined && <Text dimColor>{cap(current.detailNote, columns * 2)}</Text>}
+        {/* Another component of this repository, or another repository: only when there is one to switch to. */}
+        {(shown.length > 1 || d.repos.length > 1) && (
+          <Box flexDirection="row" gap={2}>
+            {shown.length > 1 && current !== undefined && (
+              <Button
+                key="next-component"
+                plain
+                hotkey="t"
+                onPress={act(() => update($, ui, x => ({ ...x, activeEntity: shown[(shown.indexOf(current) + 1) % shown.length]?.entityRef })))}
+              >
+                {lead('t', `component ${shown.indexOf(current) + 1}/${shown.length}`)}
+              </Button>
+            )}
+            {d.repos.length > 1 && (
+              <Button key="repos-toggle" plain hotkey="w" onPress={act(() => update($, ui, x => ({ ...x, reposOpen: x.reposOpen !== true })))}>
+                {lead('w', u.reposOpen === true ? 'hide repos' : 'switch repo')}
+              </Button>
+            )}
           </Box>
         )}
-        {rule}
-        {/* The repository in view, centred: which, how fresh, and the key to the colours below (only with a component). */}
-        <Box flexDirection="column" alignItems="center">
-          <Text dimColor>
-            {cap(
-              `${active === undefined ? '' : `${active.name}${active.branch === undefined ? '' : ` · ${cap(active.branch, 30)}`} · `}${matched} of ${d.repos.length} repos · ${u.isRefreshing === true ? 'refreshing…' : `updated ${ago(d.at, now)}`}`,
-              columns * 2,
-            )}
-          </Text>
-          {current !== undefined && (
-            <Box flexDirection="row" gap={2}>
-              <Box flexDirection="row">
-                <Text color={healthTone(currentStatus)}>■ </Text>
-                <Text dimColor>health</Text>
-              </Box>
-              <Box flexDirection="row">
-                <Text color="claude">■ </Text>
-                <Text dimColor>releases</Text>
-              </Box>
-            </Box>
-          )}
-        </Box>
+        {active !== undefined && active.matches.length > MAX_MATCHES && <Text dimColor>+{active.matches.length - MAX_MATCHES} more components in this repository</Text>}
         {rule}
         {/* Change the connection: another environment or key, or Disconnect. The one in use stays until a new key connects. */}
         {u.connOpen === true && (
@@ -1339,8 +1466,8 @@ export const register: Register = (on, options) => {
           </Box>
         )}
 
-        {/* Every repository found here, catalog ones first, a page at a time. Letters pick one, n and p turn the page. */}
-        {d.repos.length > 1 && (
+        {/* Every repository found here, catalog ones first, a page at a time. Letters pick one, n and p turn the page. Shown only while open (w). */}
+        {u.reposOpen === true && d.repos.length > 1 && (
           <Box flexDirection="column">
             <Box flexDirection="row" justifyContent="space-between">
               <Text bold>REPOSITORIES · {d.repos.length}</Text>
@@ -1381,7 +1508,7 @@ export const register: Register = (on, options) => {
                       plain
                       hotkey={letter}
                       onPress={act(async () => {
-                        await update($, ui, x => ({ ...x, chosenRoot: r.root, activeEntity: undefined, pending: undefined, notice: undefined }))
+                        await update($, ui, x => ({ ...x, chosenRoot: r.root, reposOpen: false, activeEntity: undefined, pending: undefined, notice: undefined }))
                         await refresh($, cfg, true)
                       })}
                     >
@@ -1395,22 +1522,6 @@ export const register: Register = (on, options) => {
             {rule}
           </Box>
         )}
-
-        {/* One tab for each component of this repository. */}
-        {shown.length > 0 && (
-          <Box flexDirection="column">
-            <Box flexDirection="row" gap={2}>
-              {shown.map((m, i) => (
-                <Button key={`tab-${m.entityRef}`} {...(m === current ? {} : { plain: true as const })} hotkey={String(i + 1)} onPress={act(() => update($, ui, x => ({ ...x, activeEntity: m.entityRef })))}>
-                  {`${isTerminal ? '' : `${i + 1} `}${cap(m.title ?? m.name, 18)} `}
-                  <Text color={healthTone(m.health?.status ?? 'unknown')}>●</Text>
-                </Button>
-              ))}
-            </Box>
-            {rule}
-          </Box>
-        )}
-        {active !== undefined && active.matches.length > MAX_MATCHES && <Text dimColor>+{active.matches.length - MAX_MATCHES} more components in this repository</Text>}
 
         {u.notice !== undefined && (
           <Box flexDirection="column">
@@ -1456,14 +1567,60 @@ export const register: Register = (on, options) => {
         {active !== undefined && active.lookup === 'none' && <Text dimColor>Not in the PlatformNEX catalog, or not visible to you.</Text>}
         {active !== undefined && active.lookup === 'error' && <Text color="error">Couldn't look up this repo. Press ⟳ to try again.</Text>}
 
-        {current !== undefined && active !== undefined && (
+        {/* The four views of the component: one row to pick, then the view alone. */}
+        {current !== undefined && active !== undefined && u.reposOpen !== true && (
           <Box flexDirection="column">
-            {componentPanel(current)}
+            <Box flexDirection="row" gap={2}>
+              {VIEWS.map((v, i) => (
+                <Button key={`view-${v.id}`} {...(v.id === view ? {} : { plain: true as const })} hotkey={String(i + 1)} onPress={act(() => update($, ui, x => ({ ...x, view: v.id })))}>
+                  {lead(String(i + 1), v.label)}
+                </Button>
+              ))}
+            </Box>
             {rule}
-            {releasePanel(current, active)}
-            {rule}
+            {view === 'live' ? liveView() : view === 'next' ? nextView() : view === 'release' ? releaseView(current, active) : envsView(current, active)}
           </Box>
         )}
+      </Box>
+    )
+  })
+
+  // One line above the prompt, pane open or not: a deploy under way, else how many things need the person.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const cfg = activeCfg()
+    const d = await read($, data)
+    if (e.props.hasSurvey || cfg === undefined || d.status !== 'ok') return next(e)
+    const u = await read($, ui)
+    const roots = d.repos.map(r => r.root)
+    const cwdRoot = d.repos.length === 0 ? undefined : rootContaining(await $.session.cwd(), roots)
+    const activeRoot = [u.chosenRoot, cwdRoot, u.touchedRoot].find(r => r !== undefined && roots.includes(r)) ?? d.repos.find(r => r.matches.length > 0)?.root
+    const shown = d.repos.find(r => r.root === activeRoot)?.matches.slice(0, MAX_MATCHES) ?? []
+    const current = shown.find(m => m.entityRef === u.activeEntity) ?? shown[0]
+    if (current === undefined) return next(e)
+    const now = await $.clock.now()
+    const releases = current.releases ?? []
+    const deploying = releases.find(isDeploying)
+    const needs = nextItems(current.title ?? current.name, current.health, releases, now)
+    if (deploying === undefined && needs.length === 0) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const step = deploying === undefined ? undefined : deploySteps(deploying).find(st => st.state === 'now' || st.state === 'failed')
+
+    return (
+      <Box flexDirection="row" gap={1}>
+        {deploying !== undefined && (
+          <Box flexDirection="row">
+            <Text color={step?.state === 'failed' ? 'error' : 'warning'}>● </Text>
+            <Text>{cap(`${deploying.environment ?? 'deploy'} · ${step === undefined ? 'deploying' : `${step.label}${step.note === undefined ? '' : ` ${step.note}`}`}`, 60)}</Text>
+          </Box>
+        )}
+        {deploying !== undefined && needs.length > 0 && <Text dimColor>·</Text>}
+        {needs.length > 0 && (
+          <Box flexDirection="row">
+            <Text color={needs[0]?.tone ?? 'warning'}>{needs[0]?.tone === 'error' ? '✗ ' : '⚠ '}</Text>
+            <Text>{cap(`${needs.length} need${needs.length === 1 ? 's' : ''} you · ${needs[0]?.title ?? ''}`, 70)}</Text>
+          </Box>
+        )}
+        <Text dimColor>/pnx-context</Text>
       </Box>
     )
   })

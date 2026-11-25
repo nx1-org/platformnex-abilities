@@ -1,7 +1,7 @@
 {
   "name": "pnx-context",
-  "version": "0.8.2",
-  "description": "A sidebar pane showing which PlatformNEX component the repo you are in belongs to: health, open releases and small graphs, plus the change plan Claude asks PlatformNEX for. Once set up it also keeps your Claude Code connected while Claude Code is open, so the development cycles you start use your own Claude Code. Read-only except one button that opens a draft release (never deploys). Opt-in; needs a personal PlatformNEX API key.",
+  "version": "0.9.0",
+  "description": "A sidebar pane showing which PlatformNEX component the repo you are in belongs to, in four views (a live deploy's steps, what needs you next, the open release, and each environment), plus the change plan Claude asks PlatformNEX for. Once set up it also keeps your Claude Code connected while Claude Code is open, so the development cycles you start use your own Claude Code. Read-only except one button that opens a draft release (never deploys). Opt-in; needs a personal PlatformNEX API key.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "baseUrl": {
