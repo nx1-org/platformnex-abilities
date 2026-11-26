@@ -109,6 +109,21 @@ export type CheckLine = { label: string; ok?: boolean; detail: string; fix?: str
 /** A Check's steps for one thing: the key, the lookup route or dev cycles. */
 export type CheckGroup = { name: string; steps: CheckLine[] }
 
+/**
+ * A sign-in in progress or failed, as the pane draws it. Only what the person sees: the link, the short code they check
+ * in the portal, the time it runs out and a fixed message. Never a token, the device code or text pnx printed.
+ */
+export type SigninView = {
+  phase: 'starting' | 'waiting' | 'failed'
+  userCode?: string
+  link?: string
+  /** When the code runs out, ms since the epoch. */
+  expiresAt?: number
+  /** Redraw marker for the countdown. */
+  at?: number
+  message?: string
+}
+
 export type Ui = {
   /** The repository the person chose; empty means follow the session. */
   chosenRoot?: string
@@ -141,6 +156,10 @@ export type Ui = {
    * runs, note when it could not run.
    */
   check?: { groups: CheckGroup[]; isReady: boolean; isChecking?: boolean; note?: string }
+  /** The sign-in in progress, or why the last one failed. */
+  signin?: SigninView
+  /** Who is signed in through the sign-in option (from pnx's own answer); none for a key, or after a restart. */
+  signinEmail?: string
   /** True while the CONNECTION panel is open (s): switch environment or key, or disconnect. */
   connOpen?: boolean
   /** True while Disconnect waits for the person's yes. */

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { ApiFailure, KEY_REFUSED, byRepo, call, checkAccess, createDraftRelease, forgetToken, mcpCall, recentReleases, releaseDetail, signIn, systemHealth, type Cfg, type CheckStep } from './api'
+import { ApiFailure, KEY_REFUSED, byRepo, call, checkAccess, createDraftRelease, forgetToken, mcpCall, recentReleases, releaseDetail, signIn, signinToken, systemHealth, type Cfg, type CheckStep, type SigninCfg } from './api'
 import {
   ago,
   bar,
@@ -41,8 +41,9 @@ import { badge, devStatus, logLines, rowOf, visibleJobs } from './devcycle'
 import { POLL_MS, forgetDevCycles, pollDevCycles, pollSoon, readDevCycles } from './devcyclePoll'
 import { OWN_PREFIX, handoffUrl, parseAsk, pickActiveMatch, pushAsk, scrub } from './skills'
 import { ENVIRONMENTS, FIND_CLAUDE, PLUGIN_ID, apiKeysUrl, baseOf, configureInput, environmentOf, extractKey, type EnvironmentId } from './setup'
-import { ALREADY_RUNNING_EXIT, FIND_DEVICE, FIND_NEEDS, FIND_PNX, MIN_PNX, MISSING_RETRY_MS, RETRY_MS, WANT_PNX, catalogUrlOf, devCycleSteps, endedNote, isAtLeast, isTakingJobs, lineNote, parseDeviceId, parseFind, parseNeeds, sessionEndAction } from './worker'
-import type { Ask, Asks, CheckGroup, ClaudeCode, Data, Match, Release, RepoView, Ui, View } from '../types'
+import { LOGIN_START, MIN_PNX_SIGNIN, SIGNED_OUT, countdown, deviceName, endLoginState, isSignedOutLine, lineSplitter, loginArgv, loginView, logoutArgv, nextLoginState, parseLoginLine, pnxProblem, type LoginState } from './signin'
+import { ALREADY_RUNNING_EXIT, FIND_DEVICE, FIND_NEEDS, FIND_PNX, MIN_PNX, MISSING_RETRY_MS, RETRY_MS, WANT_PNX, catalogUrlOf, devCycleSteps, endedNote, isAtLeast, isTakingJobs, lineNote, parseDeviceId, parseFind, parseNeeds, sessionEndAction, wantPnx } from './worker'
+import type { Ask, Asks, CheckGroup, ClaudeCode, Data, Match, Release, RepoView, SigninView, Ui, View } from '../types'
 
 const PANE = 'pnx-context'
 const TITLE = 'PlatformNEX'
@@ -56,15 +57,13 @@ const SCAN_MS = 10 * 60_000
 const MAX_LOOKUPS = 40
 const MAX_MATCHES = 3
 const PAGE_SIZE = 8
-// Width of the label column in the header's two status rows (✓ PlatformNEX, ● Dev cycles), so their values line up.
-
 const EMPTY_DATA: Data = { at: 0, status: 'unconfigured', repos: [] }
 const EMPTY_UI: Ui = {}
 const EMPTY_ASKS: Asks = { items: [] }
 
 // Change a tag when the stored fields change: it declines what an earlier version stored.
 const data = atom({ plugin: 'pnx-context', key: 'data' } as const, EMPTY_DATA, { shape: 'data-3' })
-const ui = atom({ plugin: 'pnx-context', key: 'ui' } as const, EMPTY_UI, { shape: 'ui-7' })
+const ui = atom({ plugin: 'pnx-context', key: 'ui' } as const, EMPTY_UI, { shape: 'ui-8' })
 // The change plans Claude asked for lately, cut down to what the pane draws.
 const asks = atom({ plugin: 'pnx-context', key: 'asks' } as const, EMPTY_ASKS, { shape: 'asks-2' })
 // Whether this machine's Claude Code takes dev-cycle jobs now (one line in the pane), and why the last try stopped (for the check).
@@ -102,7 +101,7 @@ const readCfg = (options: Readonly<Record<string, unknown>>): Cfg | undefined =>
   const key = typeof options['apiKey'] === 'string' ? options['apiKey'].trim() : ''
 
   // A key that is not a PlatformNEX key counts as not set: the pane asks for one instead of claiming a connection.
-  return base === undefined || !key.startsWith('pnx_') ? undefined : { base, key }
+  return base === undefined || !key.startsWith('pnx_') ? undefined : { mode: 'key', base, key }
 }
 
 const failure = (error: unknown): string => (error instanceof ApiFailure ? error.reason : 'something went wrong')
@@ -158,7 +157,8 @@ const startWorker = async ($: EngineInterface, cfg: Cfg): Promise<void> => {
 
       return
     }
-    const child = $.process.spawn({ argv: ['node', found.cli, 'claude', 'run', '--allow-codegen', '--auto-link'], env: { PNX_CATALOG_URL: catalogUrlOf(cfg.base), PNX_API_KEY: cfg.key } })
+    // In sign-in mode there is no key: pnx reads the sign-in session itself.
+    const child = $.process.spawn({ argv: ['node', found.cli, 'claude', 'run', '--allow-codegen', '--auto-link'], env: { PNX_CATALOG_URL: catalogUrlOf(cfg.base), ...(cfg.mode === 'key' && { PNX_API_KEY: cfg.key }) } })
     const pieces = child[Symbol.asyncIterator]()
     stopWorker = () => void pieces.return?.({ code: null, signal: null })
     let lastError: string | undefined
@@ -393,7 +393,7 @@ const refresh = async ($: EngineInterface, cfg: Cfg | undefined, force: boolean)
     if (started !== connection) return
 
     const result: Data = { at: now, status: failed !== undefined && filled.every(v => v.lookup !== 'found') ? 'error' : 'ok', error: failed, repos: filled }
-    isRefused = result.status === 'error' && result.error === KEY_REFUSED
+    isRefused = result.status === 'error' && (result.error === KEY_REFUSED || result.error === SIGNED_OUT)
     await update($, data, () => result)
 
     const active = filled.find(v => v.root === activeRoot)?.matches[0]
@@ -429,7 +429,7 @@ const saveKey = async ($: EngineInterface, pasted: string, env: EnvironmentId, p
   const label = ENVIRONMENTS.find(e => e.id === env)?.label ?? env
   await setupNote($, `Checking the key with ${label}…`, 'info', true)
   try {
-    const accepted = (await checkAccess($, { base, key })).find(s => s.label === 'key accepted')
+    const accepted = (await checkAccess($, { mode: 'key', base, key })).find(s => s.label === 'key accepted')
     if (accepted?.ok !== true) {
       await setupNote($, `${label} didn't accept this key (${accepted?.detail ?? 'could not check'}). Create a new key there and paste it again.`, 'error')
 
@@ -448,9 +448,9 @@ const saveKey = async ($: EngineInterface, pasted: string, env: EnvironmentId, p
     // Everything counts at once, with no restart: the pane switches to the connected view, Claude gets the plan tool
     // from the next prompt, and the check that follows starts the dev-cycle connection. A restart reads the saved settings.
     // Switching from a connection: the old one's dev cycles stop and its data goes before the new one is drawn.
-    const next = { base, key }
+    const next: Cfg = { mode: 'key', base, key }
     if (previous !== undefined) await dropConnection($, previous, next)
-    await update($, ui, u => ({ ...u, setupBusy: false, setupNote: undefined, connOpen: false, confirmDisconnect: false, check: undefined, setupDone: [...(u.setupDone ?? []), 'Saved for this plugin', 'Connected, opening the component view…'] }))
+    await update($, ui, u => ({ ...u, signin: undefined, signinEmail: undefined, setupBusy: false, setupNote: undefined, connOpen: false, confirmDisconnect: false, check: undefined, setupDone: [...(u.setupDone ?? []), 'Saved for this plugin', 'Connected, opening the component view…'] }))
     liveCfg = next
     isDisconnected = false
     draftKey = ''
@@ -463,6 +463,194 @@ const saveKey = async ($: EngineInterface, pasted: string, env: EnvironmentId, p
 
     return false
   }
+}
+
+// The sign-in running now (one at a time). stop() ends pnx quietly: Cancel.
+let signinRun: { stop: () => void } | undefined
+// True while signinEnded drops the connection, so the offline call's own signed-out answer does not start it twice.
+let isEnding = false
+
+const HOSTNAME_JS = "process.stdout.write(require('os').hostname())"
+
+const showSignin = ($: EngineInterface, view: SigninView | undefined) => update($, ui, u => ({ ...u, signin: view }))
+
+/** pnx as pnx-fast-dev installed it, or nothing found. */
+const findPnx = ($: EngineInterface) =>
+  $.process
+    .run(['node', '-e', FIND_PNX], { timeoutMs: 20_000 })
+    .then(r => parseFind(r.stdout))
+    .catch((): { cli?: string; version?: string } => ({}))
+
+/**
+ * Sign in from the pane: runs `pnx login --json` (pnx opens the portal's approve page in the browser, code filled in), shows
+ * the code while the person signs in and approves there, then connects with the sign-in. The plugin never sees the device code, a refresh token or a key: only pnx's
+ * own events (the short code, the link, who signed in) and, later, short-lived access tokens from `pnx token`.
+ */
+const startSignin = async ($: EngineInterface, env: EnvironmentId, previous?: Cfg): Promise<boolean> => {
+  if (signinRun !== undefined) return false
+  const base = baseOf(env)
+  let isCancelled = false
+  let stopChild: (() => void) | undefined
+  const run = {
+    stop: () => {
+      isCancelled = true
+      stopChild?.()
+    },
+  }
+  signinRun = run
+  await update($, ui, u => ({ ...u, setupNote: undefined, setupDone: [], signinEmail: undefined, signin: { phase: 'starting' as const } }))
+  try {
+    const found = await findPnx($)
+    if (isCancelled) return false
+    const problem = pnxProblem(found)
+    const cli = found.cli
+    if (problem !== undefined || cli === undefined) {
+      // Tells pnx-fast-dev which pnx is needed, so it checks at the next start.
+      await $.process.run(['node', '-e', wantPnx(MIN_PNX_SIGNIN)], { timeoutMs: 10_000 }).catch(() => undefined)
+      await showSignin($, { phase: 'failed', message: problem ?? 'Sign in needs pnx.' })
+
+      return false
+    }
+    const name = deviceName(await $.process.run(['node', '-e', HOSTNAME_JS], { timeoutMs: 10_000 }).then(r => r.stdout).catch(() => undefined))
+    const child = $.process.spawn({ argv: loginArgv(cli, base, name) })
+    const pieces = child[Symbol.asyncIterator]()
+    stopChild = () => void pieces.return?.({ code: null, signal: null })
+    if (isCancelled) stopChild()
+
+    let state: LoginState = LOGIN_START
+    const current = (): LoginState => state
+    let isTicking = false
+    // The countdown redraws every second while the code waits; a code that ran out a while ago ends it here, even if pnx said nothing.
+    const tick = async (): Promise<void> => {
+      while (signinRun === run && current().phase === 'waiting') {
+        await $.clock.sleep(1000).catch(() => undefined)
+        const now = await $.clock.now()
+        const s = current()
+        if (s.phase !== 'waiting' || isCancelled) return
+        if (now > s.expiresAt + 10_000) {
+          state = { phase: 'failed', code: 'expired' }
+          stopChild?.()
+          await showSignin($, loginView(state, now))
+
+          return
+        }
+        await update($, ui, u => (u.signin?.phase === 'waiting' ? { ...u, signin: { ...u.signin, at: now } } : u))
+      }
+    }
+    const apply = async (list: string[]): Promise<void> => {
+      for (const line of list) {
+        const event = parseLoginLine(line)
+        if (event === undefined || isCancelled) continue
+        const now = await $.clock.now()
+        state = nextLoginState(state, event, { now, base })
+        await showSignin($, loginView(state, now))
+        if (state.phase === 'waiting' && !isTicking) {
+          isTicking = true
+          void tick().catch(() => undefined)
+        }
+      }
+    }
+    const lines = lineSplitter()
+    let ended: number | null = null
+    for (;;) {
+      const piece = await pieces.next()
+      if (piece.done === true) {
+        ended = (piece.value as { code?: number | null } | undefined)?.code ?? null
+        break
+      }
+      // Only stdout carries events; what pnx says on stderr is never shown.
+      if (piece.value.stream === 'stdout') await apply(lines.feed(piece.value.text))
+    }
+    await apply(lines.flush())
+    if (isCancelled) return false
+    state = endLoginState(state, ended)
+    if (state.phase !== 'approved') {
+      await showSignin($, loginView(state, await $.clock.now()))
+
+      return false
+    }
+
+    // Approved, and pnx exited 0 with the sign-in saved: the first token proves it works before the pane says connected.
+    const next = signinCfgOf($, base, cli)
+    try {
+      await signinToken($, next)
+    } catch (error) {
+      await showSignin($, { phase: 'failed', message: `Signed in, but it can't be used yet: ${failure(error)}. Try again, or use an API key.` })
+
+      return false
+    }
+    if (previous !== undefined) await dropConnection($, previous, next)
+    await update($, ui, u => ({ ...u, signin: undefined, signinEmail: state.phase === 'approved' ? state.email : undefined, connOpen: false, confirmDisconnect: false, check: undefined, setupNote: undefined, setupDone: undefined }))
+    liveCfg = next
+    isDisconnected = false
+    draftKey = ''
+    void refresh($, liveCfg, true).catch(() => undefined)
+    void registerPlanTool($)
+
+    return true
+  } catch (error) {
+    if (!isCancelled) await showSignin($, { phase: 'failed', message: `Sign-in didn't finish: ${failure(error)}` }).catch(() => undefined)
+
+    return false
+  } finally {
+    if (signinRun === run) signinRun = undefined
+  }
+}
+
+/**
+ * Cancel: ends pnx and clears the sign-in panel. If the person approved at the very moment they cancelled, pnx may have
+ * saved the session just before it ended: the next start then reconnects with it (probeSignin).
+ */
+const cancelSignin = async ($: EngineInterface): Promise<void> => {
+  const run = signinRun
+  signinRun = undefined
+  run?.stop()
+  await showSignin($, undefined)
+}
+
+/**
+ * At Claude Code's start with no key saved: a sign-in made earlier (pnx keeps it) connects again by itself. Asks pnx for
+ * a token; if there is none (signed out, no pnx, too old) nothing changes and the pane asks as before.
+ */
+const probeSignin = async ($: EngineInterface, base: string | undefined): Promise<void> => {
+  if (base === undefined || liveCfg !== undefined || isDisconnected || signinRun !== undefined) return
+  const started = connection
+  const found = await findPnx($)
+  const cli = found.cli
+  if (cli === undefined || pnxProblem(found) !== undefined) return
+  const next = signinCfgOf($, base, cli)
+  try {
+    await signinToken($, next)
+  } catch {
+    return
+  }
+  if (started !== connection || liveCfg !== undefined || isDisconnected || signinRun !== undefined) return
+  liveCfg = next
+  void refresh($, liveCfg, true).catch(() => undefined)
+  void registerPlanTool($)
+}
+
+/** A sign-in connection whose tokens come from pnx; when pnx says the sign-in ended, the pane returns to setup (signinEnded). */
+const signinCfgOf = ($: EngineInterface, base: string, cli: string): SigninCfg => {
+  const cfg: SigninCfg = { mode: 'signin', base, cli, tokens: { onSignedOut: () => void signinEnded($, cfg).catch(() => undefined) } }
+
+  return cfg
+}
+
+/** The sign-in ended (portal sign-out, the 12 hour limit, revoked): pnx has dropped it, so the pane returns to setup and says so. */
+const signinEnded = async ($: EngineInterface, cfg: SigninCfg): Promise<void> => {
+  if (liveCfg !== cfg || isEnding) return
+  isEnding = true
+  try {
+    await dropConnection($, cfg, undefined)
+  } finally {
+    isEnding = false
+  }
+  liveCfg = undefined
+  isDisconnected = false
+  draftKey = ''
+  await update($, ui, u => ({ ...u, connOpen: false, confirmDisconnect: false, check: undefined, pending: undefined, notice: undefined, signin: undefined, signinEmail: undefined, setupBusy: false, setupDone: undefined, setupNote: { tone: 'error' as const, text: SIGNED_OUT } }))
+  await refresh($, undefined, true)
 }
 
 /**
@@ -505,9 +693,11 @@ const disconnect = async ($: EngineInterface, cfg: Cfg | undefined): Promise<voi
   liveCfg = undefined
   isDisconnected = true
   draftKey = ''
-  const found = await $.process.run(['node', '-e', FIND_CLAUDE], { timeoutMs: 10_000 }).catch(() => undefined)
+  // A sign-in is ended by pnx (it tells PlatformNEX and deletes what it saved); a key is cleared from the settings.
+  const signedOut = cfg?.mode === 'signin' ? await $.process.run(logoutArgv(cfg.cli, cfg.base), { timeoutMs: 90_000 }).then(r => isSignedOutLine(r.stdout), () => false) : undefined
+  const found = signedOut === undefined ? await $.process.run(['node', '-e', FIND_CLAUDE], { timeoutMs: 10_000 }).catch(() => undefined) : undefined
   const claude = found?.stdout.trim() || 'claude'
-  const cleared = await $.process.run([claude, 'plugin', 'configure', PLUGIN_ID, '--values-stdin'], { stdin: JSON.stringify({ apiKey: '' }), timeoutMs: 30_000 }).catch(() => undefined)
+  const cleared = signedOut === undefined ? await $.process.run([claude, 'plugin', 'configure', PLUGIN_ID, '--values-stdin'], { stdin: JSON.stringify({ apiKey: '' }), timeoutMs: 30_000 }).catch(() => undefined) : undefined
   await update($, ui, u => ({
     ...u,
     connOpen: false,
@@ -518,10 +708,17 @@ const disconnect = async ($: EngineInterface, cfg: Cfg | undefined): Promise<voi
     setupBusy: false,
     setupDone: undefined,
     setupEnv: undefined,
-    setupNote: {
-      tone: 'info' as const,
-      text: cleared?.exitCode === 0 ? 'Disconnected. Paste a key to connect again.' : 'Disconnected for this session. The saved key connects again when Claude Code restarts.',
-    },
+    signin: undefined,
+    signinEmail: undefined,
+    setupNote:
+      signedOut === undefined
+        ? {
+            tone: 'info' as const,
+            text: cleared?.exitCode === 0 ? 'Disconnected. Sign in or paste a key to connect again.' : 'Disconnected for this session. The saved key connects again when Claude Code restarts.',
+          }
+        : signedOut
+          ? { tone: 'info' as const, text: 'Signed out. Sign in again, or paste a key.' }
+          : { tone: 'error' as const, text: 'Disconnected for this session, but pnx could not end the sign-in. Run pnx logout in a terminal.' },
   }))
   await refresh($, undefined, true)
 }
@@ -619,6 +816,8 @@ const setupText = (options: Options): string => {
   return [
     'Set up PlatformNEX (pnx-context)',
     '',
+    `Easiest: open the pane (/pnx-context) and press Sign in (needs pnx ${MIN_PNX_SIGNIN} or newer). Or use an API key:`,
+    '',
     `1. Create a personal API key in the portal: user menu, API keys${safeBaseUrl(url) === undefined ? '' : ` (${safeBaseUrl(url)}/account/api-keys)`}.`,
     '   It starts with pnx_. Do not paste it into chat or a file.',
     '',
@@ -652,9 +851,19 @@ const checkText = async ($: EngineInterface, options: Options): Promise<string> 
 }
 
 /** The check's steps in three groups (the key, the lookup route, dev cycles), for the text above and the pane's CHECK. */
-type CheckResult = { key: CheckStep[]; lookup: CheckStep[]; dev?: CheckStep[]; isReady: boolean; isRetrying: boolean }
+type CheckResult = { key: CheckStep[]; lookup: CheckStep[]; dev?: CheckStep[]; isReady: boolean; isRetrying: boolean; keyGroup?: string }
 
 const checkResult = async ($: EngineInterface, options: Options): Promise<CheckResult> => {
+  // Connected by sign-in: no URL or key to check, only whether the sign-in works and the lookup answers.
+  const live = liveCfg
+  if (live?.mode === 'signin') {
+    const rest = await checkAccess($, live)
+    const result = { key: rest.filter(s => s.label !== 'lookup route'), lookup: rest.filter(s => s.label === 'lookup route'), isReady: rest.every(s => s.ok === true), isRetrying: false, keyGroup: 'sign-in' }
+    if (!result.isReady) return result
+    const dev = await devCycleCheck($, live, options['devCycles'] === 'off')
+
+    return { ...result, dev: dev.steps, isRetrying: dev.isRetrying }
+  }
   const url = urlOf(options)
   const key = keyOf(options)
   const base = safeBaseUrl(url)
@@ -702,7 +911,7 @@ const runCheck = async ($: EngineInterface, options: Options): Promise<void> => 
   await update($, ui, u => ({ ...u, check: { groups: [], isReady: false, isChecking: true } }))
   try {
     const r = await checkResult($, options)
-    const groups = [{ name: 'key', steps: r.key }, { name: 'lookup', steps: r.lookup }, ...(r.dev === undefined ? [] : [{ name: 'dev cycles', steps: r.dev }])]
+    const groups = [{ name: r.keyGroup ?? 'key', steps: r.key }, { name: 'lookup', steps: r.lookup }, ...(r.dev === undefined ? [] : [{ name: 'dev cycles', steps: r.dev }])]
     // A check of a connection dropped meanwhile is not this one's: the pane shows none rather than that.
     await update($, ui, u => ({ ...u, check: started === connection ? { groups, isReady: r.isReady } : undefined }))
   } catch {
@@ -751,7 +960,7 @@ export const register: Register = (on, options) => {
   // The worker runs once the key and address are set, unless the person turned it off.
   const activeWorkerCfg = (): Cfg | undefined => (options['devCycles'] === 'off' || isRefused ? undefined : activeCfg())
   // What the check reads: the same connection the pane uses.
-  const checkOptions = (): Options => (liveCfg !== undefined ? { ...options, apiKey: liveCfg.key, baseUrl: liveCfg.base } : isDisconnected ? { ...options, apiKey: '' } : options)
+  const checkOptions = (): Options => (liveCfg !== undefined ? { ...options, apiKey: liveCfg.mode === 'key' ? liveCfg.key : '', baseUrl: liveCfg.base } : isDisconnected ? { ...options, apiKey: '' } : options)
 
   // Leaving Claude Code stops the worker and tells PlatformNEX at once (/clear and /resume keep Claude Code, and it).
   // One request from here, not a pnx command: it fits session.end's short budget, and on Windows the stopped worker
@@ -780,6 +989,8 @@ export const register: Register = (on, options) => {
     if (activeCfg() !== undefined) void registerPlanTool($)
     void refresh($, activeCfg(), true).catch(() => undefined)
     keepWorker($, activeWorkerCfg())
+    // No key saved: a sign-in made earlier (pnx keeps it) connects again by itself.
+    if (fromOptions === undefined) void probeSignin($, safeBaseUrl(options['baseUrl'])).catch(() => undefined)
     $.clock.every(TICK_MS, () => {
       void refresh($, activeCfg(), false).catch(() => undefined)
       keepWorker($, activeWorkerCfg())
@@ -938,6 +1149,53 @@ export const register: Register = (on, options) => {
         void saveKey($, value, env, previous).then(isSaved => (isSaved ? runCheck($, checkOptions()) : undefined)).catch(() => undefined)
       }
       const connectLabel = u.setupBusy === true ? 'checking…' : 'connect'
+      const s = u.signin
+      const startSigninNow = () => void startSignin($, env, previous).then(isSaved => (isSaved ? runCheck($, checkOptions()) : undefined)).catch(() => undefined)
+      const signinBlock = (
+        <Box flexDirection="column">
+          {(s === undefined || s.phase === 'failed') && (
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Button key="signin-start" variant="primary" onPress={startSigninNow}>
+                Sign in
+              </Button>
+              <Text dimColor>with your PlatformNEX account</Text>
+            </Box>
+          )}
+          {s?.phase === 'failed' && <Text color="error">{cap(`✗ ${s.message ?? 'Sign-in did not finish.'}`, inner * 3)}</Text>}
+          {s?.phase === 'starting' && (
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Text dimColor>{s.message ?? 'Starting sign-in…'}</Text>
+              <Button key="signin-cancel" onPress={act(() => cancelSignin($))}>
+                Cancel
+              </Button>
+            </Box>
+          )}
+          {s?.phase === 'waiting' && s.link !== undefined && s.userCode !== undefined && (
+            <Box flexDirection="column">
+              <Text>Sign in on the PlatformNEX page that just opened. This connects by itself.</Text>
+              <Box flexDirection="row" gap={1}>
+                <Text dimColor>Code on that page:</Text>
+                <Text bold>{s.userCode}</Text>
+              </Box>
+              <Box flexDirection="row" gap={1} flexWrap="wrap">
+                <Text dimColor>Page did not open?</Text>
+                {isTerminal ? <Text dimColor>{s.link}</Text> : <Link href={s.link}>↗ open the sign-in page</Link>}
+                <Button key="signin-copy-link" plain onPress={press => void $.ui.copy({ text: s.link ?? '', surface: press.surface }).catch(() => undefined)}>
+                  copy link
+                </Button>
+              </Box>
+              <Box flexDirection="row" gap={1} alignItems="center">
+                <Text dimColor>{`Waiting for you · ${s.expiresAt === undefined ? '' : `${countdown(s.expiresAt, now)} left`}`}</Text>
+                <Button key="signin-cancel" onPress={act(() => cancelSignin($))}>
+                  Cancel
+                </Button>
+              </Box>
+            </Box>
+          )}
+          <Text> </Text>
+          <Text dimColor>Or use an API key</Text>
+        </Box>
+      )
 
       return (
         <Box flexDirection="column">
@@ -950,6 +1208,7 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
           <Text> </Text>
+          {signinBlock}
           <Text>1  Create an API key</Text>
           <Box flexDirection="row">
             <Text>{'   '}</Text>
@@ -1402,6 +1661,7 @@ export const register: Register = (on, options) => {
         {/* The terminal draws each hotkey beside its icon (r: ⟳); elsewhere one dim line says what the icons do. */}
         {!isTerminal && <Text dimColor>{cap(`r refresh · k check${isDev ? ' · l log' : ''}${u.connOpen === true ? '' : ' · s change'}`, columns)}</Text>}
         <Text dimColor>{cap(`connected to ${envLabel}`, columns)}</Text>
+        {cfg.mode === 'signin' && <Text dimColor>{cap(u.signinEmail === undefined ? 'connected via sign-in' : `connected as ${u.signinEmail} via sign-in`, columns * 2)}</Text>}
         <Text dimColor>
           {cap(
             `${active === undefined ? '' : `${active.name}${active.branch === undefined ? '' : ` · ${cap(active.branch, 30)}`} · `}${matched} of ${d.repos.length} repos · ${u.isRefreshing === true ? 'refreshing…' : `updated ${ago(d.at, now)}`}`,
@@ -1457,7 +1717,7 @@ export const register: Register = (on, options) => {
                 {u.confirmDisconnect === true ? (
                   <Box flexDirection="column">
                     <Text color="warning">{cap(`Disconnect from ${envLabel}?`, inner)}</Text>
-                    <Text dimColor>{cap('Dev cycles stop and the pane goes back to setup.', inner * 2)}</Text>
+                    <Text dimColor>{cap(cfg.mode === 'signin' ? 'Dev cycles stop, pnx signs out on this machine and the pane goes back to setup.' : 'Dev cycles stop and the pane goes back to setup.', inner * 2)}</Text>
                     <Box flexDirection="row" gap={1}>
                       <Button key="disconnect-yes" variant="primary" onPress={act(() => disconnect($, cfg))}>
                         Yes, disconnect
@@ -1626,7 +1886,7 @@ export const register: Register = (on, options) => {
               {VIEWS.map((v, i) =>
                 (current !== undefined && active !== undefined) || v.id === 'dev' ? (
                   <Button key={`view-${v.id}`} {...(v.id === view ? {} : { plain: true as const })} hotkey={String(i + 1)} onPress={act(() => showView(v.id))}>
-                    {lead(String(i + 1), v.label)}
+                    {current !== undefined && active !== undefined ? lead(String(i + 1), v.label) : v.label}
                   </Button>
                 ) : null,
               )}

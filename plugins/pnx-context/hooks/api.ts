@@ -3,8 +3,16 @@
 import type { EngineInterface } from 'claude-code'
 
 import { cap, unwrap } from './lib'
+import { SIGNED_OUT, TOKEN_FAILURE_TEXT, isTokenFresh, parseTokenOutput, tokenArgv } from './signin'
 
-export type Cfg = { base: string; key: string }
+/** Where the bearer comes from when no key is traded: the sign-in token pnx gives (token.ts). Memory only. */
+/** A sign-in's token state: the short-lived access token pnx last gave (memory only) and the `pnx token` run in flight. */
+export type SigninTokens = { cached?: { value: string; expiresAt: number }; inflight?: Promise<string>; onSignedOut: () => void }
+
+/** The connection in use: a personal API key traded for a token (key), or a sign-in whose tokens come from pnx (signin). */
+type KeyCfg = { mode: 'key'; base: string; key: string }
+export type SigninCfg = { mode: 'signin'; base: string; cli: string; tokens: SigninTokens }
+export type Cfg = KeyCfg | SigninCfg
 
 /** A failure that is safe to show: a short reason, nothing from the request or the response. */
 export class ApiFailure extends Error {
@@ -26,8 +34,8 @@ let token: { value: string; expiresAt: number; base: string; key: string } | und
 /** Why a call failed when PlatformNEX refused the key (wrong, expired or revoked). */
 export const KEY_REFUSED = 'the API key was not accepted'
 
-const reasonFor = (status: number): string =>
-  status === 401 ? KEY_REFUSED : status === 403 ? 'no permission' : status === 404 ? 'not found' : status === 429 ? 'too many requests, try again soon' : `PlatformNEX error (${status})`
+const reasonFor = (status: number, cfg?: Cfg): string =>
+  status === 401 ? (cfg?.mode === 'signin' ? SIGNED_OUT : KEY_REFUSED) : status === 403 ? 'no permission' : status === 404 ? 'not found' : status === 429 ? 'too many requests, try again soon' : `PlatformNEX error (${status})`
 
 type Reply = { status: number; ok: boolean; text: string }
 
@@ -58,8 +66,40 @@ async function send($: EngineInterface, cfg: Cfg, method: string, path: string, 
   return { status: reply.status, ok: reply.ok, text: reply.text }
 }
 
-/** Trades the personal key for a 15-minute token, kept in memory only. */
+// pnx may wait up to 45 s for its refresh lock and 20 s for the renewal itself; killing it sooner could lose a renewed
+// token it had not yet saved (the server then sees the old one used again and ends the session).
+const TOKEN_TIMEOUT_MS = 90_000
+
+/** One `pnx token` run. (Functions that take `$` are declared at the top of the file: the engine follows `$` only there.) */
+async function askSigninToken($: EngineInterface, cfg: SigninCfg): Promise<string> {
+  const ran = await $.process.run(tokenArgv(cfg.cli, cfg.base), { timeoutMs: TOKEN_TIMEOUT_MS }).catch(() => undefined)
+  if (ran === undefined) throw new ApiFailure('pnx could not run')
+  // pnx prints JSON even when it fails (exit 2 when signed out), so the answer is read whatever the exit code.
+  const answer = parseTokenOutput(ran.stdout)
+  if (!answer.ok && answer.reason === 'signed_out') {
+    cfg.tokens.cached = undefined
+    cfg.tokens.onSignedOut()
+  }
+  if (!answer.ok) throw new ApiFailure(TOKEN_FAILURE_TEXT[answer.reason], answer.reason === 'signed_out' ? 401 : undefined)
+  cfg.tokens.cached = { value: answer.accessToken, expiresAt: answer.expiresAt }
+
+  return answer.accessToken
+}
+
+/** The access token for a sign-in: the cached one while fresh, else one `pnx token` run that calls made together share. */
+export async function signinToken($: EngineInterface, cfg: SigninCfg): Promise<string> {
+  const tokens = cfg.tokens
+  if (isTokenFresh(tokens.cached, await $.clock.now()) && tokens.cached !== undefined) return tokens.cached.value
+  tokens.inflight ??= askSigninToken($, cfg).finally(() => {
+    tokens.inflight = undefined
+  })
+
+  return tokens.inflight
+}
+
+/** The bearer for a call: the sign-in token from its source, or the key traded for a 15-minute token. Memory only. */
 async function bearer($: EngineInterface, cfg: Cfg): Promise<string> {
+  if (cfg.mode === 'signin') return signinToken($, cfg)
   if (token !== undefined && token.base === cfg.base && token.key === cfg.key && token.expiresAt - Date.now() > 60_000) return token.value
   const reply = await send($, cfg, 'POST', '/api/catalog/auth/api-key-token', { Authorization: `ApiKey ${cfg.key}` })
   if (!reply.ok) throw new ApiFailure(reasonFor(reply.status), reply.status)
@@ -80,12 +120,18 @@ export const forgetToken = (): void => {
   token = undefined
 }
 
+/** Drops the token held for this connection, so the next call asks for a fresh one. */
+const forgetFor = (cfg: Cfg): void => {
+  if (cfg.mode === 'signin') cfg.tokens.cached = undefined
+  else forgetToken()
+}
+
 /** One authenticated call; a 401 gets one fresh token and one retry. Returns the parsed envelope data. */
 export async function call($: EngineInterface, cfg: Cfg, method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ status: number; data: unknown }> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const reply = await send($, cfg, method, path, { Authorization: `Bearer ${await bearer($, cfg)}` }, body)
     if (reply.status === 401 && attempt === 0) {
-      forgetToken()
+      forgetFor(cfg)
       continue
     }
     if (!reply.ok) {
@@ -98,13 +144,13 @@ export async function call($: EngineInterface, cfg: Cfg, method: 'GET' | 'POST',
           return undefined
         }
       })()
-      throw new ApiFailure(message ?? reasonFor(reply.status), reply.status)
+      throw new ApiFailure(message ?? reasonFor(reply.status, cfg), reply.status)
     }
 
     return { status: reply.status, data: unwrap(reply.text) }
   }
 
-  throw new ApiFailure(KEY_REFUSED, 401)
+  throw new ApiFailure(reasonFor(401, cfg), 401)
 }
 
 /** An MCP Streamable HTTP reply is JSON, or one server-sent event whose `data:` line is the JSON. */
@@ -127,10 +173,10 @@ export async function mcpCall($: EngineInterface, cfg: Cfg, name: string, args: 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const reply = await send($, cfg, 'POST', '/api/catalog/mcp-proxy', { Authorization: `Bearer ${await bearer($, cfg)}`, Accept: 'application/json, text/event-stream' }, body)
     if (reply.status === 401 && attempt === 0) {
-      forgetToken()
+      forgetFor(cfg)
       continue
     }
-    if (!reply.ok) throw new ApiFailure(reasonFor(reply.status), reply.status)
+    if (!reply.ok) throw new ApiFailure(reasonFor(reply.status, cfg), reply.status)
     const parsed = mcpBody(reply.text) as { result?: { content?: { type?: string; text?: string }[]; isError?: boolean }; error?: { message?: unknown } } | undefined
     if (parsed === undefined) throw new ApiFailure('unexpected answer from PlatformNEX')
     if (parsed.error !== undefined) throw new ApiFailure(typeof parsed.error.message === 'string' ? cap(parsed.error.message, 120) : 'the tool was refused')
@@ -138,7 +184,7 @@ export async function mcpCall($: EngineInterface, cfg: Cfg, name: string, args: 
 
     return { text, isError: parsed.result?.isError === true }
   }
-  throw new ApiFailure(KEY_REFUSED, 401)
+  throw new ApiFailure(reasonFor(401, cfg), 401)
 }
 
 export function byRepo($: EngineInterface, cfg: Cfg, repoUrl: string) {
@@ -172,16 +218,22 @@ export function createDraftRelease($: EngineInterface, cfg: Cfg, body: { entityR
 /** One line of `/pnx-context check`: ok is undefined for a step skipped. */
 export type CheckStep = { label: string; ok: boolean | undefined; detail: string; fix?: string }
 
-/** Signs in with the key and asks the lookup route one harmless question. Reasons only; nothing from the key or the answer. */
+/** Gets a token (the key, or the sign-in) and asks the lookup route one harmless question. Reasons only; nothing from the key, token or answer. */
 export async function checkAccess($: EngineInterface, cfg: Cfg): Promise<CheckStep[]> {
-  forgetToken()
+  forgetFor(cfg)
   const steps: CheckStep[] = []
+  const label = cfg.mode === 'signin' ? 'sign-in works' : 'key accepted'
   try {
     await bearer($, cfg)
-    steps.push({ label: 'key accepted', ok: true, detail: 'signed in' })
+    steps.push({ label, ok: true, detail: 'signed in' })
   } catch (error) {
-    steps.push({ label: 'key accepted', ok: false, detail: error instanceof ApiFailure ? error.reason : 'could not check', fix: 'create a new key in the portal and paste it in the pane' })
-    steps.push({ label: 'lookup route', ok: undefined, detail: 'skipped until the key works' })
+    steps.push({
+      label,
+      ok: false,
+      detail: error instanceof ApiFailure ? error.reason : 'could not check',
+      fix: cfg.mode === 'signin' ? 'sign in again (⚙ change), or use an API key' : 'create a new key in the portal and paste it in the pane',
+    })
+    steps.push({ label: 'lookup route', ok: undefined, detail: cfg.mode === 'signin' ? 'skipped until the sign-in works' : 'skipped until the key works' })
 
     return steps
   }

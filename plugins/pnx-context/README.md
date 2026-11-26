@@ -19,13 +19,22 @@ The buttons that put text into the chat send nothing to PlatformNEX. Text that c
 
 ## Set up (once per person)
 
-You need a personal API key. It acts as you, so keep it private.
+Connect in one of two ways. Both act as you, so keep the connection private.
 
-**In the pane** (the usual way, on any OS): pick the environment (Production or dit1), open **API keys** from the link, create a key, then paste it into the pane's field and press **connect** (it shows **checking…** meanwhile). The pane checks the key with that PlatformNEX and saves it for this plugin only (never in the chat), ticking each step under the field (✓ key accepted, ✓ saved, ✓ connected; a ✗ with the reason if one fails). It then switches to the component view, which always says which PlatformNEX it is connected to (`✓ PlatformNEX   connected to Production`, with `● Dev cycles` under it), and runs the check, whose result stays in the pane (closing and reopening it keeps it) until `q` closes it. No restart is needed: Claude can use the plan tool from the next prompt. **✓** (check, `k`) at the top right runs it again at any time. If that PlatformNEX later refuses the key (revoked or expired), or the saved key is not a `pnx_` key, the pane goes back to setup and says why.
+**Sign in** (the default): pick the environment, then press **Sign in** in the pane. pnx opens the portal in your browser (the code is already filled in): sign in there if asked, check that the code matches the one in the pane, and press **Approve**. If the page does not open, the pane has a link (**copy link** helps). The pane then says `connected as <your email> via sign-in`. **Cancel** ends it at any time. The code runs out after 10 minutes (the pane counts down).
+
+- **Needs pnx 0.1.20 or newer** (the pnx-fast-dev Ability installs and updates it), and the server must have sign-in turned on. If either is missing the pane says so and leaves the API key option below it; it never switches by itself.
+- **The plugin never holds your password, an API key or a long-lived token.** pnx does the sign-in and keeps what it needs in your operating system's credential store (it refuses to sign in if there is none). The plugin only asks pnx for a short-lived access token (`pnx token`), keeps it in memory and asks again a minute before it ends. Nothing about the sign-in is written to the pane's saved state, a file or a log.
+- **A session is limited.** A token lasts 10 minutes and a session at most 12 hours; it ends sooner when you sign out of the portal, end it in Account, Sessions, or leave it idle for 2 hours. The pane then goes back to setup and says "Your sign-in ended. Sign in again." Across Claude Code restarts the pane connects again by itself (without showing your email), unless an API key is saved: that is used first.
+- **Dev cycles use the same sign-in.** pnx runs without `PNX_API_KEY` and reads the session itself. An API key in pnx's own config or environment still wins over it.
+
+**With an API key** (the other way): you need a personal API key. It acts as you, so keep it private.
+
+**In the pane** (the usual way for a key, on any OS): pick the environment (Production or dit1), open **API keys** from the link, create a key, then paste it into the pane's field and press **connect** (it shows **checking…** meanwhile). The pane checks the key with that PlatformNEX and saves it for this plugin only (never in the chat), ticking each step under the field (✓ key accepted, ✓ saved, ✓ connected; a ✗ with the reason if one fails). It then switches to the component view, which always says which PlatformNEX it is connected to (`✓ PlatformNEX   connected to Production`, with `● Dev cycles` under it), and runs the check, whose result stays in the pane (closing and reopening it keeps it) until `q` closes it. No restart is needed: Claude can use the plan tool from the next prompt. **✓** (check, `k`) at the top right runs it again at any time. If that PlatformNEX later refuses the key (revoked or expired), or the saved key is not a `pnx_` key, the pane goes back to setup and says why.
 
 **⟳** (refresh, `r`) is a fresh connection: it signs in again with the key and reads everything again, and if dev cycles are not running it starts them now, looking up Node.js, gh and pnx afresh (no wait for the next retry). Dev cycles that are already running are left alone, as a job may be under way. A program installed while Claude Code is open is found only if it went into a folder already on PATH; if its installer changed PATH, restart Claude Code (on Windows, close VS Code fully) first.
 
-**Change or disconnect** later with **⚙** (change, `s`) at the top right. It opens a CONNECTION panel: pick another environment or paste another key and press **connect** to switch (dev cycles restart on the new one, with no restart of Claude Code; if the new key is refused you stay on the old one), or **⏻ disconnect**, which asks first, then stops dev cycles, tells PlatformNEX this machine is offline, stops using the key and goes back to setup. `q` closes the panel and changes nothing.
+**Change or disconnect** later with **⚙** (change, `s`) at the top right. It opens a CONNECTION panel: pick another environment or paste another key and press **connect** to switch (dev cycles restart on the new one, with no restart of Claude Code; if the new key is refused you stay on the old one), or **⏻ disconnect**, which asks first, then stops dev cycles, tells PlatformNEX this machine is offline, stops using the key and goes back to setup. After a sign-in, Disconnect also runs `pnx logout`: pnx ends the session on the server and deletes what it saved on this machine (if pnx can't, the pane says so; run `pnx logout` yourself). Press **Sign in** in the same panel to switch to a sign-in. `q` closes the panel and changes nothing.
 
 **From a terminal** instead:
 
@@ -90,10 +99,11 @@ Needs the gateway's `plan_propose` tool (platformnex-gateway PR #649) and, for t
 
 Run `/pnx-context check`. The usual causes:
 
+- **Your sign-in ended**: the session is over (see the limits above). Press Sign in again.
 - **the API key was not accepted**: the key is wrong, expired or revoked. Create a new one in the portal and save it again.
 - **this PlatformNEX does not have the repo lookup yet**: the server you point at has not been updated. Ask the platform team, or set `baseUrl` to an environment that has it.
 - **not allowed** / **not found**: your account cannot see that repository's component. This is not an error in the mod.
 
 ## What it calls
 
-Everything is read-only except one draft release, and it uses only your own key. The plan tool calls the gateway's MCP proxy (`/api/catalog/mcp-proxy`), which offers read-only tools only, with a short token made from your key. See the pull request that added it for the full list. It never calls deploy, rollback, refresh or any live cost route.
+Everything is read-only except one draft release, and it uses only you: your own key, or your sign-in's short-lived token (which can read the catalog and open draft releases, nothing else). The plan tool calls the gateway's MCP proxy (`/api/catalog/mcp-proxy`), which offers read-only tools only, with a short token made from your key. See the pull request that added it for the full list. It never calls deploy, rollback, refresh or any live cost route.

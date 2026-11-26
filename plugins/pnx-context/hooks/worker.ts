@@ -113,7 +113,7 @@ export const FIND_NEEDS = [
  * Run with `node -e`: tells pnx-fast-dev the pnx dev cycles need (`.ensure-wanted`). Until it has it, pnx-fast-dev
  * checks at every Claude Code start instead of once a day, so an update or a release arrives at the next start.
  */
-const wantPnx = (version: string): string =>
+export const wantPnx = (version: string): string =>
   [
     "const p=require('path'),f=require('fs'),o=require('os');",
     PNX_DIR,
