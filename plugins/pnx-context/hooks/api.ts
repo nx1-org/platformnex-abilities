@@ -66,7 +66,9 @@ async function send($: EngineInterface, cfg: Cfg, method: string, path: string, 
   return { status: reply.status, ok: reply.ok, text: reply.text }
 }
 
-const TOKEN_TIMEOUT_MS = 30_000
+// pnx may wait up to 45 s for its refresh lock and 20 s for the renewal itself; killing it sooner could lose a renewed
+// token it had not yet saved (the server then sees the old one used again and ends the session).
+const TOKEN_TIMEOUT_MS = 90_000
 
 /** One `pnx token` run. (Functions that take `$` are declared at the top of the file: the engine follows `$` only there.) */
 async function askSigninToken($: EngineInterface, cfg: SigninCfg): Promise<string> {

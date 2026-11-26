@@ -57,8 +57,6 @@ const SCAN_MS = 10 * 60_000
 const MAX_LOOKUPS = 40
 const MAX_MATCHES = 3
 const PAGE_SIZE = 8
-// Width of the label column in the header's two status rows (✓ PlatformNEX, ● Dev cycles), so their values line up.
-
 const EMPTY_DATA: Data = { at: 0, status: 'unconfigured', repos: [] }
 const EMPTY_UI: Ui = {}
 const EMPTY_ASKS: Asks = { items: [] }
@@ -599,7 +597,10 @@ const startSignin = async ($: EngineInterface, env: EnvironmentId, previous?: Cf
   }
 }
 
-/** Cancel: ends pnx and clears the sign-in panel. Nothing was saved. */
+/**
+ * Cancel: ends pnx and clears the sign-in panel. If the person approved at the very moment they cancelled, pnx may have
+ * saved the session just before it ended: the next start then reconnects with it (probeSignin).
+ */
 const cancelSignin = async ($: EngineInterface): Promise<void> => {
   const run = signinRun
   signinRun = undefined
@@ -693,7 +694,7 @@ const disconnect = async ($: EngineInterface, cfg: Cfg | undefined): Promise<voi
   isDisconnected = true
   draftKey = ''
   // A sign-in is ended by pnx (it tells PlatformNEX and deletes what it saved); a key is cleared from the settings.
-  const signedOut = cfg?.mode === 'signin' ? await $.process.run(logoutArgv(cfg.cli, cfg.base), { timeoutMs: 30_000 }).then(r => isSignedOutLine(r.stdout), () => false) : undefined
+  const signedOut = cfg?.mode === 'signin' ? await $.process.run(logoutArgv(cfg.cli, cfg.base), { timeoutMs: 90_000 }).then(r => isSignedOutLine(r.stdout), () => false) : undefined
   const found = signedOut === undefined ? await $.process.run(['node', '-e', FIND_CLAUDE], { timeoutMs: 10_000 }).catch(() => undefined) : undefined
   const claude = found?.stdout.trim() || 'claude'
   const cleared = signedOut === undefined ? await $.process.run([claude, 'plugin', 'configure', PLUGIN_ID, '--values-stdin'], { stdin: JSON.stringify({ apiKey: '' }), timeoutMs: 30_000 }).catch(() => undefined) : undefined
