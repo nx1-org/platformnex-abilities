@@ -999,7 +999,7 @@ export const register: Register = (on, options) => {
     $.clock.every(POLL_MS, () => {
       const cfg = activeCfg()
       const started = connection
-      if (cfg !== undefined) void read($, ui).then(u => pollDevCycles($, cfg, { isDevOpen: u.view === 'dev', isCurrent: () => started === connection, notify: (text, tone) => update($, ui, x => ({ ...x, notice: { text, tone, title: 'Dev cycle' } })) })).catch(() => undefined)
+      if (cfg !== undefined) void read($, ui).then(u => pollDevCycles($, { isDevOpen: u.view === 'dev', isCurrent: () => started === connection, notify: (text, tone) => update($, ui, x => ({ ...x, notice: { text, tone, title: 'Dev cycle' } })) })).catch(() => undefined)
     })
 
     return next(e)
@@ -1362,9 +1362,9 @@ export const register: Register = (on, options) => {
     // The view the person picked, else Live while a deploy runs and Next otherwise.
     const view: View = u.view ?? (releases.some(isDeploying) ? 'live' : 'next')
     const isDev = view === 'dev'
-    const devRows = visibleJobs(dc.jobs, dc.cloud, now)
+    const devRows = visibleJobs(dc.jobs, now)
     const devLog = logLines(dc.events, u.logOpen === true ? 30 : 12, columns)
-    const devBadge = badge(dc.jobs, dc.cloud, u.devSeenAt, isDev, now)
+    const devBadge = badge(dc.jobs, u.devSeenAt, isDev, now)
     // Names from the longest to the shortest; the strip takes the first set that fits (Environments needs 48 columns).
     const viewsOf = (envs: string, dev: string): { id: View; label: string }[] => [
       { id: 'live', label: 'Live' },
@@ -1580,7 +1580,7 @@ export const register: Register = (on, options) => {
           const r = rowOf(j, now, columns)
 
           return (
-            <Box flexDirection="column" key={`dev-${j.source}-${j.id}`}>
+            <Box flexDirection="column" key={`dev-${j.id}`}>
               {row(<Text color={r.tone}>{r.left}</Text>, <Text color={r.tone} dimColor={r.tone === undefined}>{r.right}</Text>)}
               <Text dimColor>{r.sub}</Text>
             </Box>

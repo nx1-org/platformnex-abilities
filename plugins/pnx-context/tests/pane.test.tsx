@@ -87,7 +87,7 @@ const stubWorld = (
     /** What the fake `pnx activity --json` prints, and each such call recorded. */
     activity?: () => string
     ran?: (readonly string[])[]
-    /** The server's live runs (`/dev-cycles/codegen/live`), as the gateway answers. */
+    /** What the server's live list would answer (a teammate's run): the view must never ask for it, so a test stubs it to prove that. */
     live?: unknown
   } = {},
 ) => {
@@ -1387,7 +1387,8 @@ const activityOf = (state: string, extra: Record<string, unknown> = {}) =>
     // What pnx really logs: phases, then the changed files once at the commit step.
     events: Array.from({ length: 14 }, (_, i) => ({ at: ACTIVITY_AT, job: 'job-1', level: 'info', text: `changed src/file${i}.ts` })),
   })
-const LIVE = { success: true, data: { items: [{ runId: 'run-1', kind: 'generate', status: 'running', progress: { phase: 'committing', filesChanged: 2, filesTotal: 3, areas: [] }, startedAt: '2026-11-17T09:25:00Z', intent: 'Cloud change', componentRef: 'component:default/portal', requestedBy: 'someone@example.test' }] } }
+// A teammate's run, as the server's live list would answer it: the view must neither ask for it nor show it.
+const LIVE = { success: true, data: { items: [{ runId: 'run-1', kind: 'generate', status: 'running', progress: { phase: 'committing', filesChanged: 2, filesTotal: 3, areas: [] }, startedAt: '2026-11-17T09:25:00Z', intent: 'Teammate change', componentRef: 'component:default/portal', requestedBy: 'someone@example.test' }] } }
 
 /** Starts the session with the fake pnx and lets the 3 s poll run once. */
 const startPolling = async (start: () => Promise<unknown>, clock: ReturnType<typeof mock.clock>) => {
@@ -1410,25 +1411,24 @@ test('Dev cycles is a view of its own: no dev cycle content in the others, no re
   expect(await has(/Build failing/)).toMatch(/Build failing on main/)
   expect(await has(/Add retry/)).toBeUndefined()
   expect(await has(/file2\.ts/)).toBeUndefined()
-  // One local job and one cloud run are running.
-  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ◐2')
+  // One local job is running; a teammate's run (stubbed on the server) is not counted.
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ◐1')
 
   // Dev cycles view: only dev cycles.
   await ui.press({ key: 'view-dev' })
   await clock.settle()
-  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ◐2')
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ◐1')
   expect(await has(/Add retry/)).toBe('◐ Add retry to the client')
   expect(await has(/^writing 4 files$/)).toBe('writing 4 files')
   expect(await has(/this machine/)).toMatch(/ivedha-tech\/gateway · this machine · \d+m/)
-  expect(await has(/Cloud change/)).toBe('◐ Cloud change')
-  expect(await has(/portal · cloud/)).toBeDefined()
+  expect(await has(/Teammate change/)).toBeUndefined()
   expect(await has(/Build failing/)).toBeUndefined()
   expect(await ui.find({ key: 'next-act-health-0' })).toBeUndefined()
   expect(await has(/Nothing needs you|No deploy running|No open release|^your branch/)).toBeUndefined()
   expect(await has(/REPOSITORIES|repos ·/)).toBeUndefined()
   expect(await has(/^No dev cycle running/)).toBeUndefined()
   expect(await has(/Update pnx/)).toBeUndefined()
-  // The log: the last 12 of 14 events, newest last; l shows all and again the short log.
+  // The log: the last 12 of 14 events, newest first; l shows all and again the short log.
   expect(await has(/src\/file1\.ts$/)).toBeUndefined()
   expect(await has(/src\/file2\.ts$/)).toMatch(/^\d\d:\d\d {2}changed src\/file2\.ts$/)
   expect(await has(/src\/file13\.ts$/)).toBeDefined()
@@ -1448,11 +1448,10 @@ test('Dev cycles is a view of its own: no dev cycle content in the others, no re
   await clock.settle()
   expect(await has(/Add retry/)).toBeUndefined()
 
-  // pnx is asked for nothing but the log, with no key; the live runs use the read-only route with the key's token.
+  // pnx is asked for nothing but the log, with no key; the server's live runs are never asked for, so a teammate's run cannot show.
   expect(ran.length).toBeGreaterThan(0)
   expect(ran.every(argv => argv.join(' ') === 'node /pnx/cli.js activity --json')).toBe(true)
-  expect(sent.some(r => r.url === `${BASE}/api/catalog/catalog/dev-cycles/codegen/live` && r.method === 'GET')).toBe(true)
-  expect(sent.filter(r => r.url.includes('/dev-cycles/')).every(r => !JSON.stringify(r.headers).includes(KEY))).toBe(true)
+  expect(sent.filter(r => r.url.includes('/dev-cycles/'))).toEqual([])
   await ui.press({ key: 'view-dev' })
   expect(await has(/example\.test/)).toBeUndefined()
   await ui.unmount()
@@ -1549,15 +1548,15 @@ test('Dev cycles says it is turned off when the option is off, not that nothing 
 
 test('Dev cycles shows at most 5 rows then +N more', { options: OPTIONS }, async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
-  const many = { success: true, data: { items: Array.from({ length: 7 }, (_, i) => ({ runId: `run-${i}`, status: 'running', progress: null, startedAt: '2026-11-17T09:25:00Z', intent: `Cloud change ${i}`, componentRef: 'component:default/portal' })) } }
-  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => JSON.stringify({ v: 1, online: false, jobs: [], events: [] }), live: many })
+  const many = JSON.stringify({ v: 1, online: true, daemon: { pid: 1, startedAt: ACTIVITY_AT }, jobs: Array.from({ length: 7 }, (_, i) => ({ id: `job-${i}`, kind: 'code', title: `Local change ${i}`, repo: 'ivedha-tech/gateway', branch: `platformnex/c${i}`, state: 'running', phase: 'writing', filesChanged: 1, startedAt: ACTIVITY_AT, endedAt: null, prUrl: null, reason: null })), events: [] })
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => many })
   await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'view-dev' })
   await clock.settle()
 
-  expect((await ui.find({ type: 'Text', text: /Cloud change 4/ }))?.text).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Cloud change 5/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /Local change 4/ }))?.text).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Local change 5/ })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /^\+2 more$/ }))?.text).toBe('+2 more')
   await ui.unmount()
 })
@@ -1576,7 +1575,7 @@ test('Dev cycles says so when nothing runs, and its label has no badge', { optio
   await ui.unmount()
 })
 
-test('with a pnx older than 0.1.19 the view shows the cloud rows and asks for an update, and never runs activity', { options: OPTIONS }, async ($, on) => {
+test('with a pnx older than 0.1.19 the view asks for an update and never runs activity, and still shows no teammate run', { options: OPTIONS }, async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
   const ran: (readonly string[])[] = []
   stubWorld(on, [], { findPnx: { stdout: JSON.stringify({ cli: '/pnx/cli.js', version: MIN_PNX }), until: Promise.resolve() }, activity: () => activityOf('running'), ran, live: LIVE })
@@ -1586,7 +1585,7 @@ test('with a pnx older than 0.1.19 the view shows the cloud rows and asks for an
   await clock.settle()
 
   expect((await ui.find({ type: 'Text', text: /Update pnx/ }))?.text).toBe('Update pnx for the live log on this machine')
-  expect((await ui.find({ type: 'Text', text: /Cloud change/ }))?.text).toBe('◐ Cloud change')
+  expect(await ui.find({ type: 'Text', text: /Teammate change/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /Add retry/ })).toBeUndefined()
   expect(ran).toEqual([])
   await ui.unmount()
