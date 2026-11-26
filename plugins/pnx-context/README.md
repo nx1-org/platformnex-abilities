@@ -21,7 +21,7 @@ The buttons that put text into the chat send nothing to PlatformNEX. Text that c
 
 Connect in one of two ways. Both act as you, so keep the connection private.
 
-**Sign in** (the default): pick the environment, then press **Sign in** in the pane. It shows a link and a short code; open the link (**copy link** helps), check that the code in the portal matches, and press **Approve**. The pane then says `connected as <your email> via sign-in`. **Cancel** ends it at any time. The code runs out after 10 minutes (the pane counts down).
+**Sign in** (the default): pick the environment, then press **Sign in** in the pane. pnx opens the portal in your browser (the code is already filled in): sign in there if asked, check that the code matches the one in the pane, and press **Approve**. If the page does not open, the pane has a link (**copy link** helps). The pane then says `connected as <your email> via sign-in`. **Cancel** ends it at any time. The code runs out after 10 minutes (the pane counts down).
 
 - **Needs pnx 0.1.20 or newer** (the pnx-fast-dev Ability installs and updates it), and the server must have sign-in turned on. If either is missing the pane says so and leaves the API key option below it; it never switches by itself.
 - **The plugin never holds your password, an API key or a long-lived token.** pnx does the sign-in and keeps what it needs in your operating system's credential store (it refuses to sign in if there is none). The plugin only asks pnx for a short-lived access token (`pnx token`), keeps it in memory and asks again a minute before it ends. Nothing about the sign-in is written to the pane's saved state, a file or a log.

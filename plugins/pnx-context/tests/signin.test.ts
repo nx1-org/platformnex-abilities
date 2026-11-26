@@ -141,7 +141,7 @@ test('asks pnx-fast-dev for the pnx that sign in needs', () => {
 })
 
 test('builds the pnx commands as argument lists with the portal catalog address, no shell', () => {
-  expect(loginArgv('/p/cli.js', BASE, 'dev-laptop')).toEqual(['node', '/p/cli.js', 'login', '--json', '--no-open', '--client', 'pnx-context', '--name', 'dev-laptop', '--catalog-url', `${BASE}/api/catalog`])
+  expect(loginArgv('/p/cli.js', BASE, 'dev-laptop')).toEqual(['node', '/p/cli.js', 'login', '--json', '--client', 'pnx-context', '--name', 'dev-laptop', '--catalog-url', `${BASE}/api/catalog`])
   expect(tokenArgv('/p/cli.js', BASE)).toEqual(['node', '/p/cli.js', 'token', '--json', '--catalog-url', `${BASE}/api/catalog`])
   expect(logoutArgv('/p/cli.js', BASE)).toEqual(['node', '/p/cli.js', 'logout', '--json', '--catalog-url', `${BASE}/api/catalog`])
   expect(deviceName('  my\tlaptop\n')).toBe('my laptop')

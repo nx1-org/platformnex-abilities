@@ -3,8 +3,9 @@
 // Usage: node scripts/validate-abilities.mjs [--bundle <name>]...   (default: every bundle named harness-*, plus PLATFORM_BUNDLES)
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = resolve(new URL('..', import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const args = process.argv.slice(2);
 const only = [];
 for (let i = 0; i < args.length; i++) if (args[i] === '--bundle') only.push(args[++i]);
@@ -24,7 +25,8 @@ const warnings = [];
 const err = (m) => errors.push(m);
 const warn = (m) => warnings.push(m);
 
-function frontmatter(text) {
+function frontmatter(raw) {
+  const text = raw.replace(/\r\n/g, '\n'); // a Windows checkout has CRLF
   const m = text.match(/^---\n([\s\S]*?)\n---\n/);
   if (!m) return null;
   const out = {};

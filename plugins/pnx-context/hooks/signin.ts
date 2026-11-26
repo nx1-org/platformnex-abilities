@@ -174,7 +174,7 @@ export function deviceName(raw: string | undefined): string {
 }
 
 /** The commands, as argument lists (no shell). The catalog address is the portal's under /api/catalog. */
-export const loginArgv = (cli: string, base: string, name: string): string[] => ['node', cli, 'login', '--json', '--no-open', '--client', 'pnx-context', '--name', name, '--catalog-url', catalogUrlOf(base)]
+export const loginArgv = (cli: string, base: string, name: string): string[] => ['node', cli, 'login', '--json', '--client', 'pnx-context', '--name', name, '--catalog-url', catalogUrlOf(base)]
 export const tokenArgv = (cli: string, base: string): string[] => ['node', cli, 'token', '--json', '--catalog-url', catalogUrlOf(base)]
 export const logoutArgv = (cli: string, base: string): string[] => ['node', cli, 'logout', '--json', '--catalog-url', catalogUrlOf(base)]
 

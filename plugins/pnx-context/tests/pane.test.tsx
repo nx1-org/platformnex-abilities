@@ -1157,7 +1157,7 @@ test('Sign in shows the link, the code and a countdown, then connects as the per
   await ui.press({ key: 'signin-copy-link' })
   await clock.settle()
   expect(copied).toEqual(['ABCD-1234', `${BASE}/account/device-login?code=ABCD-1234`])
-  expect(spawned.find(a => a[2] === 'login')).toEqual(['node', '/pnx/cli.js', 'login', '--json', '--no-open', '--client', 'pnx-context', '--name', 'dev-laptop', '--catalog-url', `${BASE}/api/catalog`])
+  expect(spawned.find(a => a[2] === 'login')).toEqual(['node', '/pnx/cli.js', 'login', '--json', '--client', 'pnx-context', '--name', 'dev-laptop', '--catalog-url', `${BASE}/api/catalog`])
 
   approval.release()
   await clock.settle()

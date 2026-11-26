@@ -482,8 +482,8 @@ const findPnx = ($: EngineInterface) =>
     .catch((): { cli?: string; version?: string } => ({}))
 
 /**
- * Sign in from the pane: runs `pnx login --json --no-open`, shows the link and the code while the person approves in
- * the portal, then connects with the sign-in. The plugin never sees the device code, a refresh token or a key: only pnx's
+ * Sign in from the pane: runs `pnx login --json` (pnx opens the portal's approve page in the browser, code filled in), shows
+ * the code while the person signs in and approves there, then connects with the sign-in. The plugin never sees the device code, a refresh token or a key: only pnx's
  * own events (the short code, the link, who signed in) and, later, short-lived access tokens from `pnx token`.
  */
 const startSignin = async ($: EngineInterface, env: EnvironmentId, previous?: Cfg): Promise<boolean> => {
@@ -1158,7 +1158,7 @@ export const register: Register = (on, options) => {
               <Button key="signin-start" variant="primary" onPress={startSigninNow}>
                 Sign in
               </Button>
-              <Text dimColor>with your PlatformNEX account (recommended)</Text>
+              <Text dimColor>with your PlatformNEX account</Text>
             </Box>
           )}
           {s?.phase === 'failed' && <Text color="error">{cap(`✗ ${s.message ?? 'Sign-in did not finish.'}`, inner * 3)}</Text>}
@@ -1172,23 +1172,20 @@ export const register: Register = (on, options) => {
           )}
           {s?.phase === 'waiting' && s.link !== undefined && s.userCode !== undefined && (
             <Box flexDirection="column">
-              <Text>1  Open this link and approve the sign-in</Text>
+              <Text>Sign in on the PlatformNEX page that just opened. This connects by itself.</Text>
+              <Box flexDirection="row" gap={1}>
+                <Text dimColor>Code on that page:</Text>
+                <Text bold>{s.userCode}</Text>
+              </Box>
               <Box flexDirection="row" gap={1} flexWrap="wrap">
-                <Text>{'   '}</Text>
-                {isTerminal ? <Text>{s.link}</Text> : <Link href={s.link}>↗ open the sign-in page</Link>}
+                <Text dimColor>Page did not open?</Text>
+                {isTerminal ? <Text dimColor>{s.link}</Text> : <Link href={s.link}>↗ open the sign-in page</Link>}
                 <Button key="signin-copy-link" plain onPress={press => void $.ui.copy({ text: s.link ?? '', surface: press.surface }).catch(() => undefined)}>
                   copy link
                 </Button>
               </Box>
-              <Box flexDirection="row" gap={1}>
-                <Text>{'2  Check the code matches:'}</Text>
-                <Text bold>{s.userCode}</Text>
-                <Button key="signin-copy-code" plain onPress={press => void $.ui.copy({ text: s.userCode ?? '', surface: press.surface }).catch(() => undefined)}>
-                  copy code
-                </Button>
-              </Box>
               <Box flexDirection="row" gap={1} alignItems="center">
-                <Text dimColor>{`   Waiting for you · ${s.expiresAt === undefined ? '' : `${countdown(s.expiresAt, now)} left`}`}</Text>
+                <Text dimColor>{`Waiting for you · ${s.expiresAt === undefined ? '' : `${countdown(s.expiresAt, now)} left`}`}</Text>
                 <Button key="signin-cancel" onPress={act(() => cancelSignin($))}>
                   Cancel
                 </Button>
