@@ -816,7 +816,7 @@ const setupText = (options: Options): string => {
   return [
     'Set up PlatformNEX (pnx-context)',
     '',
-    'Easiest: open the pane (/pnx-context) and press Sign in (needs pnx 0.1.19 or newer). Or use an API key:',
+    `Easiest: open the pane (/pnx-context) and press Sign in (needs pnx ${MIN_PNX_SIGNIN} or newer). Or use an API key:`,
     '',
     `1. Create a personal API key in the portal: user menu, API keys${safeBaseUrl(url) === undefined ? '' : ` (${safeBaseUrl(url)}/account/api-keys)`}.`,
     '   It starts with pnx_. Do not paste it into chat or a file.',
