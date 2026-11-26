@@ -6,6 +6,8 @@ import { FIND_PNX, MIN_PNX } from '../hooks/worker'
 const BASE = 'https://portal.example.test'
 const KEY = 'pnx_test_key_do_not_use'
 const OPTIONS = { baseUrl: BASE, apiKey: KEY }
+// The fake pnx process ends at once, so in these tests the worker is never online: the Dev cycles view says why instead of "No dev cycle running".
+const NOT_ONLINE = /^(Connecting this machine to dev cycles|○ Not connected on this machine)/
 
 const PANE = {
   plugin: 'pnx-context',
@@ -1505,7 +1507,43 @@ test('without a component Dev cycles is still offered, and the four views of a c
   expect(await ui.find({ key: 'view-next' })).toBeUndefined()
   await ui.press({ key: 'view-dev' })
   await clock.settle()
-  expect((await ui.find({ type: 'Text', text: /^No dev cycle running/ }))?.text).toBe('No dev cycle running. Start one in PlatformNEX.')
+  expect((await ui.find({ type: 'Text', text: NOT_ONLINE }))?.text).toMatch(NOT_ONLINE)
+  expect(await ui.find({ type: 'Text', text: /^No dev cycle running/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('outside the terminal, Dev cycles alone has no number: its key would point at views that are not there', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  stubWorld(on, [], { scan: '', findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => JSON.stringify({ v: 1, online: false, jobs: [], events: [] }) })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'vscode', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode', props: { ...PANE.props, bodyColumns: 80 } })
+
+  expect(await ui.find({ key: 'view-live' })).toBeUndefined()
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles')
+  await ui.unmount()
+})
+
+test('outside the terminal, with a component the views are numbered, Dev cycles as 5', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => JSON.stringify({ v: 1, online: false, jobs: [], events: [] }) })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'vscode', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode', props: { ...PANE.props, bodyColumns: 80 } })
+
+  expect((await ui.find({ key: 'view-live' }))?.text).toBe('1 Live')
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('5 Dev cycles')
+  await ui.unmount()
+})
+
+test('Dev cycles says it is turned off when the option is off, not that nothing runs', { options: { ...OPTIONS, devCycles: 'off' } }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => JSON.stringify({ v: 1, online: false, jobs: [], events: [] }) })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+
+  expect((await ui.find({ type: 'Text', text: /^Dev cycles are turned off/ }))?.text).toBe('Dev cycles are turned off in settings.')
+  expect(await ui.find({ type: 'Text', text: /^No dev cycle running/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1533,7 +1571,8 @@ test('Dev cycles says so when nothing runs, and its label has no badge', { optio
   expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles')
   await ui.press({ key: 'view-dev' })
   await clock.settle()
-  expect((await ui.find({ type: 'Text', text: /^No dev cycle running/ }))?.text).toBe('No dev cycle running. Start one in PlatformNEX.')
+  expect((await ui.find({ type: 'Text', text: NOT_ONLINE }))?.text).toMatch(NOT_ONLINE)
+  expect(await ui.find({ type: 'Text', text: /^No dev cycle running/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1590,7 +1629,7 @@ test('anything odd in pnx output is never drawn: junk, a seeded token, an error 
   await ui.press({ key: 'view-dev' })
   await clock.settle()
   expect(await ui.find({ type: 'Text', text: /secret|unreadable/ })).toBeUndefined()
-  expect((await ui.find({ type: 'Text', text: /^No dev cycle running/ }))?.text).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: NOT_ONLINE }))?.text).toBeDefined()
   // Only a fixed line: pnx's own text is never shown.
   expect((await ui.find({ type: 'Text', text: /^Log unavailable/ }))?.text).toBe('Log unavailable on this machine')
 

@@ -1888,7 +1888,7 @@ export const register: Register = (on, options) => {
               {VIEWS.map((v, i) =>
                 (current !== undefined && active !== undefined) || v.id === 'dev' ? (
                   <Button key={`view-${v.id}`} {...(v.id === view ? {} : { plain: true as const })} hotkey={String(i + 1)} onPress={act(() => showView(v.id))}>
-                    {lead(String(i + 1), v.label)}
+                    {current !== undefined && active !== undefined ? lead(String(i + 1), v.label) : v.label}
                   </Button>
                 ) : null,
               )}
