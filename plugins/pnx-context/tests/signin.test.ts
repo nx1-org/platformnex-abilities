@@ -131,13 +131,13 @@ test('every failure has fixed text that offers the API key, and none repeats wha
 
 test('says why sign in cannot start when pnx is missing or too old, and never falls back silently', () => {
   expect(pnxProblem({})).toMatch(/not installed.*API key/)
-  expect(pnxProblem({ cli: '/p/cli.js', version: '0.1.18' })).toMatch(/0\.1\.21 or newer \(this is 0\.1\.18\).*API key/)
+  expect(pnxProblem({ cli: '/p/cli.js', version: '0.1.18' })).toMatch(/0\.1\.20 or newer \(this is 0\.1\.18\).*API key/)
   expect(pnxProblem({ cli: '/p/cli.js', version: undefined })).toMatch(/this is unknown/)
-  expect(pnxProblem({ cli: '/p/cli.js', version: '0.1.21' })).toBeUndefined()
+  expect(pnxProblem({ cli: '/p/cli.js', version: '0.1.20' })).toBeUndefined()
 })
 
 test('asks pnx-fast-dev for the pnx that sign in needs', () => {
-  expect(wantPnx(MIN_PNX_SIGNIN)).toContain(`'0.1.21'`)
+  expect(wantPnx(MIN_PNX_SIGNIN)).toContain(`'0.1.20'`)
 })
 
 test('builds the pnx commands as argument lists with the portal catalog address, no shell', () => {

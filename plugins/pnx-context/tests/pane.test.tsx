@@ -1077,7 +1077,7 @@ test('in the terminal, connect can be pressed again after a failed try without t
 
 const SIGNIN_OPTIONS = { baseUrl: BASE }
 const NOW = Date.parse('2026-11-17T09:30:00Z')
-const PNX_OK = JSON.stringify({ cli: '/pnx/cli.js', version: '0.1.21' })
+const PNX_OK = JSON.stringify({ cli: '/pnx/cli.js', version: '0.1.20' })
 const FIND_OK = { stdout: PNX_OK, until: Promise.resolve() }
 const TOKEN_A = 'sso-access-token-AAAAAAAAAAAA'
 const DEVICE_SECRET = 'pnxd_device_secret_value'

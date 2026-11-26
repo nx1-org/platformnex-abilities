@@ -15,7 +15,7 @@
     {
       "name": "pnx-context",
       "source": "./plugins/pnx-context",
-      "description": "A sidebar pane showing which PlatformNEX component the repo you are in belongs to, in four views (a live deploy's steps, what needs you next, the open release, and each environment), plus the change plan Claude asks PlatformNEX for. Once set up it also keeps your Claude Code connected while Claude Code is open, so the development cycles you start use your own Claude Code. Read-only except one button that opens a draft release (never deploys). Opt-in; connect by signing in with your PlatformNEX account (needs pnx 0.1.21 or newer) or with a personal API key.",
+      "description": "A sidebar pane showing which PlatformNEX component the repo you are in belongs to, in four views (a live deploy's steps, what needs you next, the open release, and each environment), plus the change plan Claude asks PlatformNEX for. Once set up it also keeps your Claude Code connected while Claude Code is open, so the development cycles you start use your own Claude Code. Read-only except one button that opens a draft release (never deploys). Opt-in; connect by signing in with your PlatformNEX account (needs pnx 0.1.20 or newer) or with a personal API key.",
       "version": "0.11.0"
     },
     {
