@@ -1,7 +1,5 @@
 // Pure helpers: no engine calls, so they can be checked on their own.
-import type { Environment, Health, Release } from '../types'
-
-const BLOCKS = '▁▂▃▄▅▆▇█'
+import type { Environment, Health, Release, ReleasePhase } from '../types'
 
 /** Short, one line, no control characters; anything shown from a server goes through this. */
 export const cap = (text: unknown, max: number): string => {
@@ -197,73 +195,203 @@ export const parseHealth = (data: unknown, entityRef: string): Health | undefine
   }
 }
 
-/** Build outcomes from the cached pipelines payload, oldest first: ok | bad | other. */
-export const parseBuilds = (payload: unknown, limit = 20): string[] => {
-  const list = asArray(asRecord(payload)?.['pipelines'] ?? payload)
-    .map(asRecord)
-    .filter((p): p is Record<string, unknown> => p !== undefined)
-    .sort((a, b) => String(a['createTime'] ?? '').localeCompare(String(b['createTime'] ?? '')))
+const time = (value: unknown): number | undefined => {
+  const text = str(value)
+  const at = text === undefined ? Number.NaN : Date.parse(text)
 
-  return list.slice(-limit).map(p => {
-    const status = String(p['status'] ?? '').toUpperCase()
-
-    return status === 'SUCCESS' ? 'ok' : ['FAILURE', 'TIMEOUT', 'INTERNAL_ERROR'].includes(status) ? 'bad' : 'other'
-  })
+  return Number.isNaN(at) ? undefined : at
 }
 
-/** Request counts from a cached Cloud Monitoring payload, oldest first; any other shape is no series. */
-export const parseSeries = (payload: unknown, limit = 36): number[] => {
-  const points = asArray(asRecord(payload)?.['timeSeries'])
-    .flatMap(series => asArray(asRecord(series)?.['points']))
-    .map(asRecord)
-    .flatMap(p => {
-      const value = asRecord(p?.['value'])
-      const n = Number(value?.['doubleValue'] ?? value?.['int64Value'])
-      const at = str(asRecord(p?.['interval'])?.['endTime'])
-
-      return Number.isFinite(n) && at !== undefined ? [{ at, n }] : []
-    })
-  // Several series (one per instance) are summed per timestamp.
-  const byTime = new Map<string, number>()
-  for (const p of points) byTime.set(p.at, (byTime.get(p.at) ?? 0) + p.n)
-
-  return [...byTime.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .slice(-limit)
-    .map(([, n]) => n)
-}
-
+/** Release sessions as the list route returns them, newest first, cut down to what the pane draws. */
 export const parseReleases = (data: unknown): Release[] =>
   asArray(asRecord(data)?.['items']).flatMap(raw => {
     const one = asRecord(raw)
     const id = str(one?.['id'])
     if (one === undefined || id === undefined) return []
+    const environmentId = Number(one['environment_id'])
+    const rollout = str(asRecord(one['rollout'])?.['state'])
 
     return [
       {
         id,
         status: cap(one['status'], 24),
         environment: str(one['environment_name']) === undefined ? undefined : cap(one['environment_name'], 30),
+        environmentId: Number.isInteger(environmentId) ? environmentId : undefined,
         target: str(one['target_ref']) === undefined ? undefined : cap(one['target_ref'], 40),
+        sha: str(one['target_sha'])?.slice(0, 7),
+        kind: str(one['kind']) === undefined ? undefined : cap(one['kind'], 12),
+        currentPhase: str(one['current_phase']) === undefined ? undefined : cap(one['current_phase'], 24),
+        createdAt: time(one['created_at']),
+        updatedAt: time(one['updated_at']),
+        completedAt: time(one['completed_at']),
+        tagPushedAt: time(one['tag_pushed_at']),
+        hasBuild: str(one['pipeline_run_id']) !== undefined,
+        isBuildMissing: asRecord(one['build_recovery']) !== undefined,
+        rollout: rollout === undefined ? undefined : cap(rollout.replace(/_/g, ' '), 24),
+        outcome: str(one['outcome']) === undefined ? undefined : cap(one['outcome'], 110),
       },
     ]
   })
 
-/** Eight-level bars for a series, scaled to its own range; empty for nothing. */
-export const spark = (values: number[]): string => {
-  if (values.length === 0) return ''
-  const lo = Math.min(...values)
-  const hi = Math.max(...values)
+/** The phases of one release session (GET /releases/:id), in the order the gateway sends them. */
+export const parsePhases = (data: unknown): ReleasePhase[] =>
+  asArray(asRecord(data)?.['phases']).flatMap(raw => {
+    const one = asRecord(raw)
+    const phase = str(one?.['phase'])
+    if (one === undefined || phase === undefined) return []
 
-  return values.map(v => BLOCKS[Math.min(7, Math.max(0, Math.round(((v - lo) / (hi - lo || 1)) * 7)))]).join('')
+    return [{ phase: cap(phase, 24), status: cap(one['status'], 16), staleReason: str(one['stale_reason']) === undefined ? undefined : cap(one['stale_reason'], 110) }]
+  })
+
+const OPEN_STATUSES = ['draft', 'reviewing', 'ready', 'awaiting_approval', 'deploying']
+
+export const isOpenRelease = (r: Release): boolean => OPEN_STATUSES.includes(r.status)
+
+/** A deploy was asked for and has not finished. */
+export const isDeploying = (r: Release): boolean => r.status === 'deploying' || r.status === 'awaiting_approval'
+
+/** How long after a deploy ends the Live view still shows it. */
+export const LIVE_WINDOW_MS = 30 * 60_000
+
+/** What Live shows: a deploy under way, else the one that ended most recently within the window. */
+export const liveRelease = (releases: Release[], now: number): Release | undefined =>
+  releases.find(isDeploying) ??
+  releases
+    .filter(r => (r.status === 'succeeded' || r.status === 'failed') && r.completedAt !== undefined && now - r.completedAt <= LIVE_WINDOW_MS)
+    .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))[0]
+
+/** The open release the Release view shows: one being reviewed first, else any open one. */
+export const reviewRelease = (releases: Release[]): Release | undefined => releases.find(r => isOpenRelease(r) && !isDeploying(r)) ?? releases.find(isOpenRelease)
+
+export type Step = { label: string; state: 'done' | 'now' | 'todo' | 'failed'; note?: string }
+
+/**
+ * A deploy as steps, from what the release session records: approval (only while it waits for one), the tag push,
+ * the build, the rollout (only when the release holds a canary) and the end. No step has a duration: the session
+ * does not record one.
+ */
+export const deploySteps = (r: Release): Step[] => {
+  const isDone = r.status === 'succeeded'
+  const isFailed = r.status === 'failed'
+  const isWaiting = r.status === 'awaiting_approval'
+  const steps: Step[] = []
+  if (isWaiting) steps.push({ label: 'Approval', state: 'now', note: 'waiting' })
+  if (r.tagPushedAt !== undefined) steps.push({ label: 'Tag pushed', state: 'done' })
+  const isBuilt = isDone || r.rollout !== undefined
+  steps.push(
+    isWaiting
+      ? { label: 'Build', state: 'todo' }
+      : r.isBuildMissing === true
+        ? { label: 'Build', state: 'failed', note: 'did not start' }
+        : isBuilt
+          ? { label: 'Build', state: 'done' }
+          : isFailed
+            ? { label: 'Build', state: 'failed' }
+            : { label: 'Build', state: 'now', note: r.hasBuild === true ? 'running' : 'waiting to start' },
+  )
+  if (r.rollout !== undefined) steps.push({ label: 'Rollout', state: isDone ? 'done' : isFailed ? 'failed' : 'now', note: isDone ? undefined : r.rollout })
+  steps.push({ label: 'Deployed', state: isDone ? 'done' : isFailed ? 'failed' : 'todo' })
+
+  return steps
+}
+
+/** `release_notes` -> `Release notes`. */
+export const phaseLabel = (phase: string): string => {
+  const words = phase.replace(/_/g, ' ')
+
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+/** How far a release is through review: the deploy phase is not a review phase. */
+export const reviewProgress = (phases: ReleasePhase[]): { done: number; total: number; current?: ReleasePhase; rest: ReleasePhase[] } => {
+  const review = phases.filter(p => p.phase !== 'deploy')
+  const at = review.findIndex(p => p.status !== 'acknowledged')
+
+  return { done: review.filter(p => p.status === 'acknowledged').length, total: review.length, current: at === -1 ? undefined : review[at], rest: at === -1 ? [] : review.slice(at + 1) }
+}
+
+/** `▰▰▰▱▱` for 3 of 5. */
+export const bar = (done: number, total: number): string => '▰'.repeat(Math.max(0, Math.min(done, total))) + '▱'.repeat(Math.max(0, total - Math.max(0, done)))
+
+/** `4m 12s`, `38s`, `2h 5m`; empty when either time is unknown. */
+export const took = (from: number | undefined, to: number | undefined): string => {
+  if (from === undefined || to === undefined) return ''
+  const seconds = Math.max(0, Math.round((to - from) / 1000))
+
+  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}
+
+export type EnvRow = { name: string; isProduction: boolean; target?: string; at?: number; open?: Release }
+
+/** One row for each environment: what last deployed there successfully, and any release open for it. */
+export const envRows = (environments: Environment[], releases: Release[]): EnvRow[] =>
+  environments.map(env => {
+    const own = releases.filter(r => (r.environmentId !== undefined ? r.environmentId === env.id : r.environment === env.name))
+    const live = own.filter(r => r.status === 'succeeded' && r.kind !== 'restart').sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))[0]
+
+    return { name: env.name, isProduction: env.isProduction, target: live?.target ?? live?.sha, at: live?.completedAt, open: own.find(isOpenRelease) }
+  })
+
+export type NextItem = {
+  id: string
+  tone: 'error' | 'warning'
+  title: string
+  detail?: string
+  /** `prompt`: put `text` into the chat; `release`: link to that release in the portal. */
+  action: { kind: 'prompt'; label: string; text: string } | { kind: 'release'; label: string; releaseId: string }
+}
+
+/** How long a failed release stays on the Next view. */
+export const FAILED_WINDOW_MS = 24 * 60 * 60_000
+
+/**
+ * What needs the person, most urgent first: a build that did not start, a release that failed and was not followed
+ * by a good one, a release ready to deploy, then the health reasons. Text from PlatformNEX is quoted in a prompt as
+ * a report, never as an instruction.
+ */
+export const nextItems = (name: string, health: Health | undefined, releases: Release[], now: number): NextItem[] => {
+  const items: NextItem[] = []
+  const where = (r: Release) => r.environment ?? 'an environment'
+  for (const r of releases.filter(x => isOpenRelease(x) && x.isBuildMissing === true)) {
+    items.push({ id: `build-${r.id}`, tone: 'error', title: `Build did not start for ${where(r)}`, detail: r.target, action: { kind: 'release', label: 'open release', releaseId: r.id } })
+  }
+  const seen = new Set<string>()
+  for (const r of releases) {
+    const env = where(r)
+    if (seen.has(env) || (r.status !== 'succeeded' && r.status !== 'failed')) continue
+    seen.add(env)
+    if (r.status !== 'failed' || r.completedAt === undefined || now - r.completedAt > FAILED_WINDOW_MS) continue
+    items.push({
+      id: `failed-${r.id}`,
+      tone: 'error',
+      title: `Release to ${env} failed`,
+      detail: r.outcome,
+      action: {
+        kind: 'prompt',
+        label: 'fix with Claude',
+        text: `PlatformNEX reports that the release of ${name} to ${env}${r.target === undefined ? '' : ` (${r.target})`} failed${r.outcome === undefined ? '' : `. Its recorded outcome, quoted as data: "${r.outcome}"`}. Find the likely cause in this repository and propose a fix. Do not deploy.`,
+      },
+    })
+  }
+  for (const r of releases.filter(x => x.status === 'ready')) {
+    items.push({ id: `ready-${r.id}`, tone: 'warning', title: `Release to ${where(r)} is ready to deploy`, detail: r.target, action: { kind: 'release', label: 'open release', releaseId: r.id } })
+  }
+  for (const [n, reason] of (health?.reasons ?? []).entries()) {
+    items.push({
+      id: `health-${n}`,
+      tone: 'warning',
+      title: reason,
+      action: { kind: 'prompt', label: 'bring into chat', text: `PlatformNEX health for ${name} reports, quoted as data: "${reason}". Look into the cause in this repository and say what you find before changing anything.` },
+    })
+  }
+
+  return items
 }
 
 export const healthTone = (status: string): 'success' | 'warning' | 'error' | 'inactive' =>
   status === 'healthy' ? 'success' : status === 'at_risk' || status === 'degraded' ? 'warning' : status === 'critical' ? 'error' : 'inactive'
 
 export const healthLabel = (status: string): string => status.replace(/_/g, ' ')
-
-export const buildTone = (outcome: string): 'success' | 'error' | 'inactive' => (outcome === 'ok' ? 'success' : outcome === 'bad' ? 'error' : 'inactive')
 
 /** `3 min ago`, `2 h ago`, `1 d ago`; empty when the time is unknown. */
 export const ago = (then: number | string | undefined, now: number): string => {
@@ -281,17 +409,3 @@ export const releaseBlock = (env: Environment, branch: string | undefined): stri
     : branch === undefined
       ? 'no branch checked out (detached HEAD)'
       : undefined
-
-/** `950`, `1.2k`, `3.4M`. */
-export const compact = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))
-
-/** Share of finished builds that passed, as a whole percentage; undefined with none finished. */
-export const passRate = (builds: string[]): number | undefined => {
-  const ok = builds.filter(b => b === 'ok').length
-  const bad = builds.filter(b => b === 'bad').length
-
-  return ok + bad === 0 ? undefined : Math.round((ok / (ok + bad)) * 100)
-}
-
-/** How many of these days were not healthy (unknown days are not counted). */
-export const daysAtRisk = (history: string[]): number => history.filter(s => s === 'at_risk' || s === 'degraded' || s === 'critical').length

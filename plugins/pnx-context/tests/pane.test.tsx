@@ -52,6 +52,8 @@ const stubWorld = (
   opts: {
     scan?: string
     releases?: unknown
+    /** One release session with its phases (GET /releases/:id). */
+    release?: unknown
     created?: unknown
     byRepo?: unknown
     byRepoStatus?: number
@@ -80,6 +82,11 @@ const stubWorld = (
      * exit code. `tokens`: what `pnx token` prints on each call (the last one repeats). `logout`: what `pnx logout` prints.
      */
     pnx?: { login?: (string | Promise<void>)[]; loginExit?: number; tokens?: string[]; logout?: string }
+    /** What the fake `pnx activity --json` prints, and each such call recorded. */
+    activity?: () => string
+    ran?: (readonly string[])[]
+    /** The server's live runs (`/dev-cycles/codegen/live`), as the gateway answers. */
+    live?: unknown
   } = {},
 ) => {
   let tokens = 0
@@ -161,6 +168,15 @@ const stubWorld = (
       return { value: { exitCode: 0, stdout: opts.findPnx.stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
 
+    if (e.argv[2] === 'activity') {
+      opts.ran?.push(e.argv)
+
+      const printed = opts.activity?.() ?? ''
+
+      // pnx exits 2 for an unreadable file.
+      return { value: { exitCode: printed.includes('"error"') ? 2 : 0, stdout: printed, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+
     return { value: { exitCode: 0, stdout: opts.scan ?? SCAN, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('http.fetch', (_, e) => {
@@ -170,16 +186,18 @@ const stubWorld = (
     const elsewhere = Object.keys(opts.byRepoAt ?? {}).find(host => e.url.startsWith(`${host}/`))
     if (e.url.includes('/entities/by-repo') && elsewhere !== undefined) return json(opts.byRepoAt?.[elsewhere])
     if (e.url.includes('/entities/by-repo')) return opts.byRepoStatus === undefined ? json(opts.byRepo ?? BY_REPO) : json({ success: false }, opts.byRepoStatus)
+    if (e.url.endsWith('/dev-cycles/codegen/live')) return json(opts.live ?? { success: true, data: { items: [] } })
     if (e.url.includes('/health')) return json(HEALTH)
     if (e.url.endsWith('/dashboard/batch')) return json(BATCH)
     if (e.url.includes('/releases') && (e.init?.method ?? 'GET') === 'POST') return json(opts.created ?? { success: true, data: { session: { id: 'rel-9' }, created: true } }, 201)
+    if (/\/releases\/[^/?]+$/.test(e.url)) return json(opts.release ?? { success: true, data: { phases: [] } })
     if (e.url.includes('/releases')) return json(opts.releases ?? { success: true, data: { items: [] } })
 
     return json({ success: false }, 404)
   })
 }
 
-test('the pane shows the component, health, builds and releases, and no pull requests, on every surface', { options: OPTIONS }, async ($, on) => {
+test('the pane shows the component, its health and the views, and no graphs or pull requests, on every surface', { options: OPTIONS }, async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
   const sent: Sent[] = []
   stubWorld(on, sent)
@@ -192,20 +210,19 @@ test('the pane shows the component, health, builds and releases, and no pull req
     const has = async (text: RegExp) => (await ui.find({ type: 'Text', text }))?.text
 
     expect(await has(/^GATEWAY$/)).toBe('GATEWAY')
-    expect(await has(/platform/)).toMatch(/default\/platform/)
     // The component's own status wins over the System's.
     expect(await has(/at risk/)).toMatch(/● at risk/)
+    // One button for each view.
+    for (const id of ['live', 'next', 'release', 'envs', 'dev']) expect(await ui.find({ key: `view-${id}` })).toBeDefined()
+    // With no deploy running the pane opens on Next, where the health reason is the one thing to do.
     expect(await has(/Build failing/)).toMatch(/Build failing on main/)
-    // Pull requests are not drawn, and not asked for.
+    expect(await ui.find({ key: 'next-act-health-0' })).toBeDefined()
+    // The graphs are gone, and pull requests are not drawn or asked for.
+    expect(await has(/^builds/)).toBeUndefined()
+    expect(await has(/^health \d+d/)).toBeUndefined()
+    expect(await has(/passing/)).toBeUndefined()
     expect(await has(/PULL REQUESTS/)).toBeUndefined()
     expect(await has(/pull requests/)).toBeUndefined()
-    expect(await has(/Add by-repo route/)).toBeUndefined()
-    expect(await has(/^RELEASES$/)).toBe('RELEASES')
-    expect(await has(/^builds/)).toMatch(/^builds ×2/)
-    expect(await has(/^health 3d/)).toMatch(/^health 3d/)
-    // The short notes beside the gauges.
-    expect(await has(/passing/)).toBe('50% passing')
-    expect(await has(/at risk$/)).toMatch(/1 day at risk|● at risk/)
     await ui.unmount()
   }
 
@@ -215,8 +232,8 @@ test('the pane shows the component, health, builds and releases, and no pull req
   expect(sent.filter(r => JSON.stringify(r.headers).includes(KEY)).map(r => r.url)).toEqual([`${BASE}/api/catalog/auth/api-key-token`])
   // The login in the remote is stripped before anything is sent.
   expect(sent.some(r => r.url.includes('s3cret') || r.url.includes('someone'))).toBe(false)
-  // Read-only: nothing but reads, plus the cached-snapshot POST.
-  expect(sent.filter(r => r.method !== 'GET').map(r => r.url)).toEqual([`${BASE}/api/catalog/auth/api-key-token`, `${BASE}/api/aggregator/dashboard/batch`])
+  // Read-only: nothing but reads after the sign-in.
+  expect(sent.filter(r => r.method !== 'GET').map(r => r.url)).toEqual([`${BASE}/api/catalog/auth/api-key-token`])
   expect(sent.some(r => r.url.includes('/refresh'))).toBe(false)
 })
 
@@ -256,6 +273,8 @@ test('Start a release opens a draft only: confirm first, never production, never
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
 
+  // Drafts are opened from the Release view.
+  await ui.press({ key: 'view-release' })
   // Production has no button, only the reason.
   expect(await ui.find({ key: 'rel-component:default/gateway-2' })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /production: in the portal/ }))?.text).toBeDefined()
@@ -279,7 +298,7 @@ test('Start a release opens a draft only: confirm first, never production, never
   await ui.unmount()
 })
 
-test('a repository with several components gets a tab for each; the tab chosen decides what is shown', { options: OPTIONS }, async ($, on) => {
+test('a repository with several components gets one button that moves to the next component', { options: OPTIONS }, async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
   const sent: Sent[] = []
   const second = { ...BY_REPO.data.items[0], entityRef: 'component:default/web', name: 'web', title: 'Web' }
@@ -289,13 +308,12 @@ test('a repository with several components gets a tab for each; the tab chosen d
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
 
-  expect(await ui.find({ key: 'tab-component:default/gateway' })).toBeDefined()
-  expect(await ui.find({ key: 'tab-component:default/web' })).toBeDefined()
-  // The first component is shown until another tab is chosen.
+  expect((await ui.find({ key: 'next-component' }))?.text).toMatch(/component 1\/2/)
+  // The first component is shown until the button is pressed.
   expect((await ui.find({ type: 'Text', text: /^GATEWAY$/ }))?.text).toBe('GATEWAY')
   expect(await ui.find({ type: 'Text', text: /^WEB$/ })).toBeUndefined()
 
-  await ui.press({ key: 'tab-component:default/web' })
+  await ui.press({ key: 'next-component' })
   expect((await ui.find({ type: 'Text', text: /^WEB$/ }))?.text).toBe('WEB')
   expect(await ui.find({ type: 'Text', text: /^GATEWAY$/ })).toBeUndefined()
   await ui.unmount()
@@ -309,6 +327,7 @@ test('an open release to the same environment is reused, not duplicated', { opti
   await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'view-release' })
   await ui.press({ key: 'rel-component:default/gateway-1' })
   await ui.press({ key: 'confirm' })
   await clock.settle()
@@ -421,6 +440,9 @@ test('a folder with many repositories lists them a page at a time, and a reposit
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
 
+  // The list stays closed until asked for.
+  expect(await ui.find({ type: 'Text', text: /REPOSITORIES/ })).toBeUndefined()
+  await ui.press({ key: 'repos-toggle' })
   expect((await ui.find({ type: 'Text', text: /REPOSITORIES/ }))?.text).toMatch(/10/)
   // First page: eight rows, the one in view is not a button, the ninth repository is on the next page.
   expect(await ui.find({ key: 'pick-/w/r1' })).toBeDefined()
@@ -433,6 +455,9 @@ test('a folder with many repositories lists them a page at a time, and a reposit
 
   await ui.press({ key: 'pick-/w/r8' })
   await clock.settle()
+  // Picking one closes the list; opened again, the one picked is in view.
+  expect(await ui.find({ type: 'Text', text: /REPOSITORIES/ })).toBeUndefined()
+  await ui.press({ key: 'repos-toggle' })
   expect(await ui.find({ key: 'pick-/w/r8' })).toBeUndefined()
   expect(await ui.find({ key: 'pick-/w/r0' })).toBeDefined()
   await ui.unmount()
@@ -763,7 +788,7 @@ test('CHECK with a refused key says not ready and names the key, with its fix', 
   await ui.unmount()
 })
 
-test('the header puts the connection first and the repository under a rule', { options: OPTIONS }, async ($, on) => {
+test('the header names the component, then the connection and the repository', { options: OPTIONS }, async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
   const sent: Sent[] = []
   stubWorld(on, sent)
@@ -772,16 +797,16 @@ test('the header puts the connection first and the repository under a rule', { o
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
 
-  expect((await ui.find({ type: 'Text', text: /^PLATFORMNEX$/ }))?.text).toBe('PLATFORMNEX')
-  expect((await ui.find({ type: 'Text', text: /^✓ PlatformNEX/ }))?.text).toMatch(/^✓ PlatformNEX\s+$/)
-  expect((await ui.find({ type: 'Text', text: /Dev cycles\s*$/ }))?.text).toMatch(/^[●○] Dev cycles\s+$/)
+  expect((await ui.find({ type: 'Text', text: /^GATEWAY$/ }))?.text).toBe('GATEWAY')
+  expect(await ui.find({ type: 'Text', text: /^PLATFORMNEX$/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^connected to / }))?.text).toBe('connected to portal.example.test')
   expect((await ui.find({ type: 'Text', text: /repos ·/ }))?.text).toMatch(/^gateway · feat\/x · 1 of 1 repos · /)
-  // The colour key shows with a component, as here.
-  expect((await ui.find({ type: 'Text', text: /^health$/ }))?.text).toBe('health')
+  // The old two-column status rows are gone.
+  expect(await ui.find({ type: 'Text', text: /^✓ PlatformNEX/ })).toBeUndefined()
   await ui.unmount()
 })
 
-test('without a component the colour key is not shown', { options: OPTIONS }, async ($, on) => {
+test('without a component the header says PLATFORMNEX and no views are offered', { options: OPTIONS }, async ($, on) => {
   const clock = mock.clock(on, { now: 0 })
   const sent: Sent[] = []
   stubWorld(on, sent, { scan: '' })
@@ -790,8 +815,86 @@ test('without a component the colour key is not shown', { options: OPTIONS }, as
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
 
+  expect((await ui.find({ type: 'Text', text: /^PLATFORMNEX$/ }))?.text).toBe('PLATFORMNEX')
   expect((await ui.find({ type: 'Text', text: /^connected to / }))?.text).toBe('connected to portal.example.test')
-  expect(await ui.find({ type: 'Text', text: /^health$/ })).toBeUndefined()
+  expect(await ui.find({ key: 'view-live' })).toBeUndefined()
+  await ui.unmount()
+})
+
+const RELEASE = (over: Record<string, unknown>) => ({ id: 'rel-1', status: 'reviewing', environment_id: 1, environment_name: 'staging', target_ref: 'v1.2.0', target_sha: 'a81d07c9f0', kind: 'release', current_phase: 'readiness', created_at: '2026-11-17T09:00:00Z', ...over })
+
+test('while a deploy runs the pane opens on Live and shows its steps, with no log lines', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  const sent: Sent[] = []
+  stubWorld(on, sent, { releases: { success: true, data: { items: [RELEASE({ status: 'deploying', tag_pushed_at: '2026-11-17T09:26:00Z', pipeline_run_id: 'build-7', rollout: { state: 'watching' } })] } } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text }))?.text
+
+  expect(await has(/^Deploying to/)).toBe('Deploying to staging')
+  expect(await has(/^v1\.2\.0/)).toBe('v1.2.0 · a81d07c')
+  expect(await has(/^Tag pushed$/)).toBe('Tag pushed')
+  expect(await has(/^Build$/)).toBe('Build')
+  expect(await has(/^Rollout$/)).toBe('Rollout')
+  expect(await has(/^watching$/)).toBe('watching')
+  expect(await has(/^Deployed$/)).toBe('Deployed')
+  // Another view can still be picked, and stays picked.
+  await ui.press({ key: 'view-envs' })
+  expect(await has(/^Deploying to/)).toBeUndefined()
+  expect(await has(/release deploying/)).toBe('release deploying')
+  await ui.unmount()
+})
+
+test('the Release view shows how far review is, where it stopped, and what is left', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  const sent: Sent[] = []
+  const phases = [
+    { phase: 'overview', status: 'acknowledged' },
+    { phase: 'changes', status: 'acknowledged' },
+    { phase: 'readiness', status: 'stale', stale_reason: 'A new commit changed the target' },
+    { phase: 'impact', status: 'pending' },
+    { phase: 'deploy', status: 'pending' },
+  ]
+  stubWorld(on, sent, { releases: { success: true, data: { items: [RELEASE({})] } }, release: { success: true, data: { ...RELEASE({}), phases } } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text }))?.text
+  await ui.press({ key: 'view-release' })
+
+  expect(await has(/^Release to/)).toBe('Release to staging')
+  expect(await has(/2 of 4$/)).toMatch(/▱▱ 2 of 4$/)
+  expect(await has(/phases reviewed/)).toBe('2 phases reviewed')
+  expect(await has(/^Readiness$/)).toBe('Readiness')
+  expect(await has(/^stale$/)).toBe('stale')
+  expect(await has(/new commit/)).toMatch(/A new commit changed the target/)
+  // The deploy phase is not a review phase.
+  expect(await has(/^○ Impact/)).toBe('○ Impact')
+  await ui.unmount()
+})
+
+test('the Environments view has one row for each environment: what is deployed there and any open release', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  const sent: Sent[] = []
+  const items = [
+    RELEASE({ id: 'rel-2', status: 'reviewing', environment_id: 2, environment_name: 'production', target_ref: 'v1.2.0' }),
+    RELEASE({ id: 'rel-1', status: 'succeeded', target_ref: 'v1.2.0', completed_at: '2026-11-17T07:30:00Z' }),
+  ]
+  stubWorld(on, sent, { releases: { success: true, data: { items } } })
+
+  await $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text }))?.text
+  await ui.press({ key: 'view-envs' })
+
+  expect(await has(/^your branch/)).toMatch(/^your branch\s+$/)
+  expect(await has(/^staging/)).toMatch(/^staging\s+$/)
+  expect(await has(/^2 h ago$/)).toBe('2 h ago')
+  expect(await has(/^release reviewing$/)).toBe('release reviewing')
   await ui.unmount()
 })
 
@@ -972,7 +1075,7 @@ test('in the terminal, connect can be pressed again after a failed try without t
 
 const SIGNIN_OPTIONS = { baseUrl: BASE }
 const NOW = Date.parse('2026-11-17T09:30:00Z')
-const PNX_OK = JSON.stringify({ cli: '/pnx/cli.js', version: '0.1.19' })
+const PNX_OK = JSON.stringify({ cli: '/pnx/cli.js', version: '0.1.21' })
 const FIND_OK = { stdout: PNX_OK, until: Promise.resolve() }
 const TOKEN_A = 'sso-access-token-AAAAAAAAAAAA'
 const DEVICE_SECRET = 'pnxd_device_secret_value'
@@ -1267,5 +1370,233 @@ test('the API key path is untouched: it still trades the key, and the worker sti
   const worker = spawned.findIndex(a => a[2] === 'claude')
   expect(worker).toBeGreaterThanOrEqual(0)
   expect(spawnEnv[worker]).toEqual({ PNX_CATALOG_URL: `${BASE}/api/catalog`, PNX_API_KEY: KEY })
+  await ui.unmount()
+})
+
+// A pnx that has `pnx activity`, and what the fake one prints.
+const NEW_PNX = JSON.stringify({ cli: '/pnx/cli.js', version: '0.1.19' })
+const ACTIVITY_AT = '2026-11-17T09:20:00Z'
+const activityOf = (state: string, extra: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    v: 1,
+    online: true,
+    daemon: { pid: 1, startedAt: ACTIVITY_AT },
+    jobs: [{ id: 'job-1', kind: 'code', title: 'Add retry to the client', repo: 'ivedha-tech/gateway', branch: 'platformnex/retry', state, phase: state === 'running' ? 'writing' : null, filesChanged: 4, startedAt: ACTIVITY_AT, endedAt: state === 'running' ? null : '2026-11-17T09:28:00Z', prUrl: state === 'done' ? 'https://github.com/ivedha-tech/gateway/pull/42' : null, reason: state === 'failed' ? 'no changes' : null, ...extra }],
+    // What pnx really logs: phases, then the changed files once at the commit step.
+    events: Array.from({ length: 14 }, (_, i) => ({ at: ACTIVITY_AT, job: 'job-1', level: 'info', text: `changed src/file${i}.ts` })),
+  })
+const LIVE = { success: true, data: { items: [{ runId: 'run-1', kind: 'generate', status: 'running', progress: { phase: 'committing', filesChanged: 2, filesTotal: 3, areas: [] }, startedAt: '2026-11-17T09:25:00Z', intent: 'Cloud change', componentRef: 'component:default/portal', requestedBy: 'someone@example.test' }] } }
+
+/** Starts the session with the fake pnx and lets the 3 s poll run once. */
+const startPolling = async (start: () => Promise<unknown>, clock: ReturnType<typeof mock.clock>) => {
+  await start()
+  await clock.settle()
+  await clock.advance(3_000)
+  await clock.settle()
+}
+
+test('Dev cycles is a view of its own: no dev cycle content in the others, no repository content in it', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  const sent: Sent[] = []
+  const ran: (readonly string[])[] = []
+  stubWorld(on, sent, { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => activityOf('running'), ran, live: LIVE })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text }))?.text
+
+  // Never picked by itself: the pane opens on Next, with no dev cycle rows or log; the Dev cycles label carries the badge.
+  expect(await has(/Build failing/)).toMatch(/Build failing on main/)
+  expect(await has(/Add retry/)).toBeUndefined()
+  expect(await has(/file2\.ts/)).toBeUndefined()
+  // One local job and one cloud run are running.
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ◐2')
+
+  // Dev cycles view: only dev cycles.
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ◐2')
+  expect(await has(/Add retry/)).toBe('◐ Add retry to the client')
+  expect(await has(/^writing 4 files$/)).toBe('writing 4 files')
+  expect(await has(/this machine/)).toMatch(/ivedha-tech\/gateway · this machine · \d+m/)
+  expect(await has(/Cloud change/)).toBe('◐ Cloud change')
+  expect(await has(/portal · cloud/)).toBeDefined()
+  expect(await has(/Build failing/)).toBeUndefined()
+  expect(await ui.find({ key: 'next-act-health-0' })).toBeUndefined()
+  expect(await has(/Nothing needs you|No deploy running|No open release|^your branch/)).toBeUndefined()
+  expect(await has(/REPOSITORIES|repos ·/)).toBeUndefined()
+  expect(await has(/^No dev cycle running/)).toBeUndefined()
+  expect(await has(/Update pnx/)).toBeUndefined()
+  // The log: the last 12 of 14 events, newest last; l shows all and again the short log.
+  expect(await has(/src\/file1\.ts$/)).toBeUndefined()
+  expect(await has(/src\/file2\.ts$/)).toMatch(/^\d\d:\d\d {2}changed src\/file2\.ts$/)
+  expect(await has(/src\/file13\.ts$/)).toBeDefined()
+  await ui.press({ key: 'log-toggle' })
+  await clock.settle()
+  expect(await has(/src\/file0\.ts$/)).toBeDefined()
+  await ui.press({ key: 'log-toggle' })
+  await clock.settle()
+  expect(await has(/src\/file0\.ts$/)).toBeUndefined()
+
+  // Back to Next with its button; the choice is kept, never changed by itself.
+  await ui.press({ key: 'view-next' })
+  await clock.settle()
+  expect(await has(/Build failing/)).toBeDefined()
+  expect(await has(/Add retry/)).toBeUndefined()
+  await clock.advance(15_000)
+  await clock.settle()
+  expect(await has(/Add retry/)).toBeUndefined()
+
+  // pnx is asked for nothing but the log, with no key; the live runs use the read-only route with the key's token.
+  expect(ran.length).toBeGreaterThan(0)
+  expect(ran.every(argv => argv.join(' ') === 'node /pnx/cli.js activity --json')).toBe(true)
+  expect(sent.some(r => r.url === `${BASE}/api/catalog/catalog/dev-cycles/codegen/live` && r.method === 'GET')).toBe(true)
+  expect(sent.filter(r => r.url.includes('/dev-cycles/')).every(r => !JSON.stringify(r.headers).includes(KEY))).toBe(true)
+  await ui.press({ key: 'view-dev' })
+  expect(await has(/example\.test/)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the view buttons open Dev cycles and leave it for any other view, which stays as picked', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => activityOf('running') })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const dev = async () => (await ui.find({ type: 'Text', text: /Add retry/ }))?.text
+
+  // The harness presses by key, not hotkey; 5 is the Dev cycles button's hotkey.
+  expect(await dev()).toBeUndefined()
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+  expect(await dev()).toBeDefined()
+  await ui.press({ key: 'view-envs' })
+  await clock.settle()
+  expect(await dev()).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^your branch/ }))?.text).toBeDefined()
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+  await ui.press({ key: 'view-next' })
+  await clock.settle()
+  expect(await dev()).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /Build failing/ }))?.text).toBeDefined()
+  await ui.unmount()
+})
+
+test('on a narrow pane the Dev cycles label shortens to Dev, keeping its badge', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => activityOf('running') })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const narrow = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 40 } })
+  expect((await narrow.find({ key: 'view-dev' }))?.text).toBe('Dev ◐1')
+  expect((await narrow.find({ key: 'view-envs' }))?.text).toBe('Envs')
+  await narrow.unmount()
+  const wide = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 60 } })
+  expect((await wide.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ◐1')
+  expect((await wide.find({ key: 'view-envs' }))?.text).toBe('Environments')
+  await wide.unmount()
+})
+
+test('without a component Dev cycles is still offered, and the four views of a component are not', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  stubWorld(on, [], { scan: '', findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => JSON.stringify({ v: 1, online: false, jobs: [], events: [] }) })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  expect(await ui.find({ key: 'view-live' })).toBeUndefined()
+  expect(await ui.find({ key: 'view-next' })).toBeUndefined()
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+  expect((await ui.find({ type: 'Text', text: /^No dev cycle running/ }))?.text).toBe('No dev cycle running. Start one in PlatformNEX.')
+  await ui.unmount()
+})
+
+test('Dev cycles shows at most 5 rows then +N more', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  const many = { success: true, data: { items: Array.from({ length: 7 }, (_, i) => ({ runId: `run-${i}`, status: 'running', progress: null, startedAt: '2026-11-17T09:25:00Z', intent: `Cloud change ${i}`, componentRef: 'component:default/portal' })) } }
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => JSON.stringify({ v: 1, online: false, jobs: [], events: [] }), live: many })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+
+  expect((await ui.find({ type: 'Text', text: /Cloud change 4/ }))?.text).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Cloud change 5/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^\+2 more$/ }))?.text).toBe('+2 more')
+  await ui.unmount()
+})
+
+test('Dev cycles says so when nothing runs, and its label has no badge', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => JSON.stringify({ v: 1, online: false, jobs: [], events: [] }) })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles')
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+  expect((await ui.find({ type: 'Text', text: /^No dev cycle running/ }))?.text).toBe('No dev cycle running. Start one in PlatformNEX.')
+  await ui.unmount()
+})
+
+test('with a pnx older than 0.1.19 the view shows the cloud rows and asks for an update, and never runs activity', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  const ran: (readonly string[])[] = []
+  stubWorld(on, [], { findPnx: { stdout: JSON.stringify({ cli: '/pnx/cli.js', version: MIN_PNX }), until: Promise.resolve() }, activity: () => activityOf('running'), ran, live: LIVE })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+
+  expect((await ui.find({ type: 'Text', text: /Update pnx/ }))?.text).toBe('Update pnx for the live log on this machine')
+  expect((await ui.find({ type: 'Text', text: /Cloud change/ }))?.text).toBe('◐ Cloud change')
+  expect(await ui.find({ type: 'Text', text: /Add retry/ })).toBeUndefined()
+  expect(ran).toEqual([])
+  await ui.unmount()
+})
+
+test('a job seen running that then fails: one notice line, a ✕ badge on the Dev cycles label until the view is opened', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  let state = 'running'
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => activityOf(state) })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ◐1')
+  expect(await ui.find({ type: 'Text', text: /^Dev cycle failed/ })).toBeUndefined()
+
+  state = 'failed'
+  await clock.advance(3_000)
+  await clock.settle()
+  // On another view: the notice line, and the badge says failed (a symbol, not only a colour).
+  expect((await ui.find({ type: 'Text', text: /^Dev cycle failed/ }))?.text).toBe('Dev cycle failed: Add retry to the client · no changes')
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles ✕')
+
+  // Opening the view shows the failed row with its mark and reason and the notice line, once; the badge is gone after leaving it.
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+  expect((await ui.find({ type: 'Text', text: /^✕ Add retry/ }))?.text).toBe('✕ Add retry to the client')
+  expect((await ui.find({ type: 'Text', text: /^no changes$/ }))?.text).toBe('no changes')
+  expect((await ui.find({ type: 'Text', text: /^Dev cycle failed/ }))?.text).toBe('Dev cycle failed: Add retry to the client · no changes')
+  await ui.press({ key: 'view-next' })
+  await clock.settle()
+  expect((await ui.find({ key: 'view-dev' }))?.text).toBe('Dev cycles')
+  await ui.unmount()
+})
+
+test('anything odd in pnx output is never drawn: junk, a seeded token, an error object', { options: OPTIONS }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-17T09:30:00Z') })
+  let out = '{"error":"unreadable","detail":"C:\\\\secret\\\\path"}'
+  stubWorld(on, [], { findPnx: { stdout: NEW_PNX, until: Promise.resolve() }, activity: () => out })
+  await startPolling(() => $.session.start({ cwd: '/w/gateway', surface: 'terminal', isInteractive: true }), clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'view-dev' })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: /secret|unreadable/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^No dev cycle running/ }))?.text).toBeDefined()
+  // Only a fixed line: pnx's own text is never shown.
+  expect((await ui.find({ type: 'Text', text: /^Log unavailable/ }))?.text).toBe('Log unavailable on this machine')
+
+  out = activityOf('running', { title: 'Bearer abc.def', reason: 'pnx_secretvalue' }).replace('changed src/file3.ts', 'ghp_seededtoken123')
+  await clock.advance(3_000)
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: /Bearer|ghp_|pnx_secret/ })).toBeUndefined()
   await ui.unmount()
 })

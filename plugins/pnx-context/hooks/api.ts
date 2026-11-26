@@ -3,14 +3,15 @@
 import type { EngineInterface } from 'claude-code'
 
 import { cap, unwrap } from './lib'
-import { SIGNED_OUT } from './signin'
+import { SIGNED_OUT, TOKEN_FAILURE_TEXT, isTokenFresh, parseTokenOutput, tokenArgv } from './signin'
 
 /** Where the bearer comes from when no key is traded: the sign-in token pnx gives (token.ts). Memory only. */
-export type TokenSource = { get: ($: EngineInterface) => Promise<string>; forget: () => void }
+/** A sign-in's token state: the short-lived access token pnx last gave (memory only) and the `pnx token` run in flight. */
+export type SigninTokens = { cached?: { value: string; expiresAt: number }; inflight?: Promise<string>; onSignedOut: () => void }
 
 /** The connection in use: a personal API key traded for a token (key), or a sign-in whose tokens come from pnx (signin). */
 type KeyCfg = { mode: 'key'; base: string; key: string }
-export type SigninCfg = { mode: 'signin'; base: string; cli: string; tokens: TokenSource }
+export type SigninCfg = { mode: 'signin'; base: string; cli: string; tokens: SigninTokens }
 export type Cfg = KeyCfg | SigninCfg
 
 /** A failure that is safe to show: a short reason, nothing from the request or the response. */
@@ -65,9 +66,38 @@ async function send($: EngineInterface, cfg: Cfg, method: string, path: string, 
   return { status: reply.status, ok: reply.ok, text: reply.text }
 }
 
+const TOKEN_TIMEOUT_MS = 30_000
+
+/** One `pnx token` run. (Functions that take `$` are declared at the top of the file: the engine follows `$` only there.) */
+async function askSigninToken($: EngineInterface, cfg: SigninCfg): Promise<string> {
+  const ran = await $.process.run(tokenArgv(cfg.cli, cfg.base), { timeoutMs: TOKEN_TIMEOUT_MS }).catch(() => undefined)
+  if (ran === undefined) throw new ApiFailure('pnx could not run')
+  // pnx prints JSON even when it fails (exit 2 when signed out), so the answer is read whatever the exit code.
+  const answer = parseTokenOutput(ran.stdout)
+  if (!answer.ok && answer.reason === 'signed_out') {
+    cfg.tokens.cached = undefined
+    cfg.tokens.onSignedOut()
+  }
+  if (!answer.ok) throw new ApiFailure(TOKEN_FAILURE_TEXT[answer.reason], answer.reason === 'signed_out' ? 401 : undefined)
+  cfg.tokens.cached = { value: answer.accessToken, expiresAt: answer.expiresAt }
+
+  return answer.accessToken
+}
+
+/** The access token for a sign-in: the cached one while fresh, else one `pnx token` run that calls made together share. */
+export async function signinToken($: EngineInterface, cfg: SigninCfg): Promise<string> {
+  const tokens = cfg.tokens
+  if (isTokenFresh(tokens.cached, await $.clock.now()) && tokens.cached !== undefined) return tokens.cached.value
+  tokens.inflight ??= askSigninToken($, cfg).finally(() => {
+    tokens.inflight = undefined
+  })
+
+  return tokens.inflight
+}
+
 /** The bearer for a call: the sign-in token from its source, or the key traded for a 15-minute token. Memory only. */
 async function bearer($: EngineInterface, cfg: Cfg): Promise<string> {
-  if (cfg.mode === 'signin') return cfg.tokens.get($)
+  if (cfg.mode === 'signin') return signinToken($, cfg)
   if (token !== undefined && token.base === cfg.base && token.key === cfg.key && token.expiresAt - Date.now() > 60_000) return token.value
   const reply = await send($, cfg, 'POST', '/api/catalog/auth/api-key-token', { Authorization: `ApiKey ${cfg.key}` })
   if (!reply.ok) throw new ApiFailure(reasonFor(reply.status), reply.status)
@@ -90,7 +120,7 @@ export const forgetToken = (): void => {
 
 /** Drops the token held for this connection, so the next call asks for a fresh one. */
 const forgetFor = (cfg: Cfg): void => {
-  if (cfg.mode === 'signin') cfg.tokens.forget()
+  if (cfg.mode === 'signin') cfg.tokens.cached = undefined
   else forgetToken()
 }
 
@@ -168,8 +198,14 @@ export function snapshots($: EngineInterface, cfg: Cfg, keys: { domain: string; 
   return call($, cfg, 'POST', '/api/aggregator/dashboard/batch', { keys })
 }
 
-export function openReleases($: EngineInterface, cfg: Cfg, entityRef: string) {
-  return call($, cfg, 'GET', `/api/catalog/releases?entityRef=${encodeURIComponent(entityRef)}&open=true&limit=5`)
+/** The latest release sessions of a component, open and finished, newest first. */
+export function recentReleases($: EngineInterface, cfg: Cfg, entityRef: string) {
+  return call($, cfg, 'GET', `/api/catalog/releases?entityRef=${encodeURIComponent(entityRef)}&limit=30`)
+}
+
+/** One release session with its phases. */
+export function releaseDetail($: EngineInterface, cfg: Cfg, id: string) {
+  return call($, cfg, 'GET', `/api/catalog/releases/${encodeURIComponent(id)}`)
 }
 
 /** Opens a DRAFT release session. This is the only write the mod makes; it never calls deploy. */

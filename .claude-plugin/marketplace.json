@@ -15,8 +15,8 @@
     {
       "name": "pnx-context",
       "source": "./plugins/pnx-context",
-      "description": "A sidebar pane showing which PlatformNEX component the repo you are in belongs to: health, open releases and small graphs, plus the change plan Claude asks PlatformNEX for. Once set up it also keeps your Claude Code connected while Claude Code is open, so the development cycles you start use your own Claude Code. Read-only except one button that opens a draft release (never deploys). Opt-in; connect by signing in with your PlatformNEX account (needs pnx 0.1.19 or newer) or with a personal API key.",
-      "version": "0.9.0"
+      "description": "A sidebar pane showing which PlatformNEX component the repo you are in belongs to, in four views (a live deploy's steps, what needs you next, the open release, and each environment), plus the change plan Claude asks PlatformNEX for. Once set up it also keeps your Claude Code connected while Claude Code is open, so the development cycles you start use your own Claude Code. Read-only except one button that opens a draft release (never deploys). Opt-in; connect by signing in with your PlatformNEX account (needs pnx 0.1.21 or newer) or with a personal API key.",
+      "version": "0.11.0"
     },
     {
       "name": "bencium-ux",
@@ -82,13 +82,13 @@
       "name": "pnx-fast-dev",
       "source": "./plugins/pnx-fast-dev",
       "description": "PlatformNEX fast development: keeps the pnx CLI installed and current (SessionStart, once a day, in the background) and teaches Claude to use pnx dev intercept, connect and env against a non-production environment, preview pull requests (pnx dev preview) reach its databases (pnx dev db), and set up and run all of a System's components (pnx dev setup, pnx dev run).",
-      "version": "1.2.5"
+      "version": "1.2.6"
     },
     {
       "name": "pnx-harness",
       "source": "./plugins/pnx-harness",
       "description": "PlatformNEX layer of the engineering harness: guard hooks that keep agents off the release path, secrets and guardrail files (PreToolUse on Bash and edits; formats Python after an edit), gate skills (idea brief, PRD, ADR, threat model, pull request, release readiness), a compliance reviewer, and a guide to reading release, alert and cost state through the platformnex MCP server.",
-      "version": "1.0.2"
+      "version": "1.0.3"
     },
     {
       "name": "harness-core",

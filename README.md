@@ -19,7 +19,7 @@ Managed by PlatformNEX. Every change arrives as a reviewed pull request, and mer
 Most people receive the marketplace through the organisation's managed settings, which also decide which plugins are turned on. To add it by hand:
 
 ```
-/plugin marketplace add ivedha-tech/platformnex-abilities
+/plugin marketplace add nx1-org/platformnex-abilities
 /plugin marketplace update platformnex-abilities
 /plugin install <plugin>@platformnex-abilities
 ```

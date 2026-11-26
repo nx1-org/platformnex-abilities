@@ -8,7 +8,7 @@ import type { SigninView } from '../types'
 import { catalogUrlOf, isAtLeast } from './worker'
 
 /** The first pnx with `pnx login`, `pnx token` and `pnx logout`. */
-export const MIN_PNX_SIGNIN = '0.1.19'
+export const MIN_PNX_SIGNIN = '0.1.21'
 /** An access token is renewed (asked for again) when it has less than this left. */
 const TOKEN_MARGIN_MS = 60_000
 /** Why a call failed when the sign-in ended (portal sign-out, 12 hour limit, revoked). */

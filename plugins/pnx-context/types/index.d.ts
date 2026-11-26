@@ -9,7 +9,39 @@ export type Health = {
   history: string[]
 }
 
-export type Release = { id: string; status: string; environment?: string; target?: string }
+/** One phase of a release session: its name and review status (pending, computed, acknowledged, stale). */
+export type ReleasePhase = { phase: string; status: string; staleReason?: string }
+
+/** A release session, cut down to what the pane draws. Times are ms since the epoch. */
+export type Release = {
+  id: string
+  status: string
+  environment?: string
+  environmentId?: number
+  target?: string
+  /** Short commit. */
+  sha?: string
+  /** release, rollback or restart. */
+  kind?: string
+  currentPhase?: string
+  createdAt?: number
+  updatedAt?: number
+  completedAt?: number
+  tagPushedAt?: number
+  /** True once the session names its build. */
+  hasBuild?: boolean
+  /** True when the tag was pushed and no build started for it. */
+  isBuildMissing?: boolean
+  /** The canary's state word, when the release holds a rollout. */
+  rollout?: string
+  /** Why it ended, short. */
+  outcome?: string
+  /** Only for the release the Release view shows. */
+  phases?: ReleasePhase[]
+}
+
+/** The pane's five views. */
+export type View = 'live' | 'next' | 'release' | 'envs' | 'dev'
 
 export type Match = {
   entityRef: string
@@ -18,11 +50,10 @@ export type Match = {
   systemRefs: string[]
   environments: Environment[]
   health?: Health
-  /** Latest builds' outcomes, oldest first: ok | bad | other. */
-  builds?: string[]
-  /** Request counts over the metrics window, oldest first. */
-  requests?: number[]
+  /** The latest release sessions, newest first: open ones and finished ones. */
   releases?: Release[]
+  /** When the releases were last read, ms since the epoch (they are read more often while one deploys). */
+  releasesAt?: number
   /** When this match's detail was read, ms since the epoch. */
   detailAt?: number
   /** Why some detail is missing, short. */
@@ -102,6 +133,10 @@ export type Ui = {
   askHidden?: string
   /** True while the ASK answer is shown in full (m). */
   askOpen?: boolean
+  /** The view the person picked (1 to 5); empty means Live while a deploy runs, otherwise Next. Dev cycles is never chosen by itself. */
+  view?: View
+  /** True while the repository list is open (w). */
+  reposOpen?: boolean
   /** Which page of the repository list is showing, from 0. */
   page?: number
   /** The component tab the person picked, by entity ref; empty means the first. */
@@ -109,7 +144,7 @@ export type Ui = {
   /** A release draft waiting for the person's confirmation. */
   pending?: { entityRef: string; environmentId: number; environmentName: string; branch: string; head?: string }
   /** The result of the last action, one line plus an optional link. */
-  notice?: { text: string; url?: string }
+  notice?: { text: string; url?: string; title?: string; tone?: 'success' | 'error' }
   /** Setup in the pane: the environment picked (prod, dit1), whether a key is being checked, and the last result. Never the key. */
   setupEnv?: 'prod' | 'dit1'
   setupBusy?: boolean
@@ -129,6 +164,10 @@ export type Ui = {
   connOpen?: boolean
   /** True while Disconnect waits for the person's yes. */
   confirmDisconnect?: boolean
+  /** When the person last left the Dev cycles view (ms): a failure after it is unseen and the view's badge shows ✕. */
+  devSeenAt?: number
+  /** True while the Dev cycles log is shown in full (l: 30 events) instead of the last 12. */
+  logOpen?: boolean
   /** True while the pane reads everything again (⟳, a new connection, the timer), or a ⟳ waits for one to finish. */
   isRefreshing?: boolean
 }
@@ -136,8 +175,31 @@ export type Ui = {
 /** Whether this machine's Claude Code takes PlatformNEX's dev-cycle jobs now (the worker the plugin runs), and why the last try stopped. */
 export type ClaudeCode = { status: 'connecting' | 'online' | 'offline'; note?: string }
 
+/** One dev cycle job, from this machine's pnx or the server's live runs, cut down to what the view draws. */
+export type DevJob = {
+  id: string
+  source: 'local' | 'cloud'
+  title: string
+  repo?: string
+  state: 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted' | 'waiting'
+  phase?: string
+  files: number
+  /** ms since the epoch. */
+  startedAt?: number
+  endedAt?: number
+  /** The pull request's number, never its address. */
+  pr?: number
+  /** A short fixed phrase chosen by pnx. */
+  reason?: string
+}
+
+export type DevEvent = { at: number; level: 'info' | 'warn' | 'error'; text: string }
+
+/** What the Dev cycles view shows. local: how this machine's log could be read (old: no pnx, or before 0.1.19). */
+export type DevCycles = { local: 'unknown' | 'ok' | 'old' | 'failed'; jobs: DevJob[]; events: DevEvent[]; cloud: DevJob[] }
+
 declare module 'claude-code' {
   interface PluginState {
-    'pnx-context': { data: Shaped<Data>; ui: Shaped<Ui>; asks: Shaped<Asks>; claudeCode: Shaped<ClaudeCode> }
+    'pnx-context': { data: Shaped<Data>; ui: Shaped<Ui>; asks: Shaped<Asks>; claudeCode: Shaped<ClaudeCode>; devCycles: Shaped<DevCycles> }
   }
 }
