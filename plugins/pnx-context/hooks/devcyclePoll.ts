@@ -14,7 +14,7 @@ const LOCAL_BUSY_MS = 3_000
 const LOCAL_IDLE_MS = 15_000
 
 const EMPTY: DevCycles = { local: 'unknown', jobs: [], events: [] }
-export const devCycles = atom({ plugin: 'pnx-context', key: 'devCycles' } as const, EMPTY, { shape: 'devcycles-1' })
+export const devCycles = atom({ plugin: 'pnx-context', key: 'devCycles' } as const, EMPTY, { shape: 'devcycles-2' })
 
 let pnx: { cli?: string; version?: string; at: number } | undefined
 let lastLocal = 0
