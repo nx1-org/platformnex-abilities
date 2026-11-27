@@ -693,17 +693,15 @@ test('the header buttons are icons; the hotkey line shows only where the surface
     expect((await ui.find({ key: 'refresh' }))?.text).toBe('⟳')
     expect((await ui.find({ key: 'check' }))?.text).toBe('✓')
     expect((await ui.find({ key: 'conn-open' }))?.text).toBe('⚙')
-    const legend = await ui.find({ type: 'Text', text: /^r refresh · k check · s change$/ })
-    if (surface === 'terminal') expect(legend).toBeUndefined()
-    else expect(legend).toBeDefined()
+    // No hotkey legend on any surface: the icons speak for themselves.
+    expect(await ui.find({ type: 'Text', text: /^r refresh · k check/ })).toBeUndefined()
     await ui.unmount()
   }
 
-  // With the CONNECTION panel open ⚙ is hidden, so the line doesn't offer it either.
+  // With the CONNECTION panel open ⚙ is hidden.
   const code = await $.ui.mount({ ...PANE, surface: 'vscode' })
   await code.press({ key: 'conn-open' })
   expect(await code.find({ key: 'conn-open' })).toBeUndefined()
-  expect((await code.find({ type: 'Text', text: /^r refresh · k check/ }))?.text).toBe('r refresh · k check')
   await code.unmount()
 })
 
@@ -802,7 +800,8 @@ test('the header names the component, then the connection and the repository', {
   expect((await ui.find({ type: 'Text', text: /^GATEWAY$/ }))?.text).toBe('GATEWAY')
   expect(await ui.find({ type: 'Text', text: /^PLATFORMNEX$/ })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /^connected to / }))?.text).toBe('connected to portal.example.test')
-  expect((await ui.find({ type: 'Text', text: /repos ·/ }))?.text).toMatch(/^gateway · feat\/x · 1 of 1 repos · /)
+  expect((await ui.find({ type: 'Text', text: /^gateway · feat\/x$/ }))?.text).toBe('gateway · feat/x')
+  expect((await ui.find({ type: 'Text', text: /repos ·/ }))?.text).toMatch(/^1 of 1 repos · /)
   // The old two-column status rows are gone.
   expect(await ui.find({ type: 'Text', text: /^✓ PlatformNEX/ })).toBeUndefined()
   await ui.unmount()
@@ -916,7 +915,8 @@ test('on Windows the repository you are in is found and shown, with no shell', {
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
 
-  expect((await ui.find({ type: 'Text', text: /repos ·/ }))?.text).toMatch(/^gateway · feat\/x · 1 of 1 repos · /)
+  expect((await ui.find({ type: 'Text', text: /^gateway · feat\/x$/ }))?.text).toBe('gateway · feat/x')
+  expect((await ui.find({ type: 'Text', text: /repos ·/ }))?.text).toMatch(/^1 of 1 repos · /)
   expect((await ui.find({ type: 'Text', text: /^GATEWAY$/ }))?.text).toBe('GATEWAY')
   // git is run directly, never through sh.
   expect(ran.some(argv => argv[0] === 'sh')).toBe(false)

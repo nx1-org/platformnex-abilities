@@ -1658,13 +1658,12 @@ export const register: Register = (on, options) => {
             )}
           </Box>
         </Box>
-        {/* The terminal draws each hotkey beside its icon (r: ⟳); elsewhere one dim line says what the icons do. */}
-        {!isTerminal && <Text dimColor>{cap(`r refresh · k check${isDev ? ' · l log' : ''}${u.connOpen === true ? '' : ' · s change'}`, columns)}</Text>}
         <Text dimColor>{cap(`connected to ${envLabel}`, columns)}</Text>
         {cfg.mode === 'signin' && <Text dimColor>{cap(u.signinEmail === undefined ? 'connected via sign-in' : `connected as ${u.signinEmail} via sign-in`, columns * 2)}</Text>}
+        {active !== undefined && <Text dimColor>{cap(`${active.name}${active.branch === undefined ? '' : ` · ${active.branch}`}`, columns * 2)}</Text>}
         <Text dimColor>
           {cap(
-            `${active === undefined ? '' : `${active.name}${active.branch === undefined ? '' : ` · ${cap(active.branch, 30)}`} · `}${matched} of ${d.repos.length} repos · ${u.isRefreshing === true ? 'refreshing…' : `updated ${ago(d.at, now)}`}`,
+            `${matched} of ${d.repos.length} repos · ${u.isRefreshing === true ? 'refreshing…' : `updated ${ago(d.at, now)}`}`,
             columns * 2,
           )}
         </Text>
