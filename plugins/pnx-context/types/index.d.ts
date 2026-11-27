@@ -175,13 +175,12 @@ export type Ui = {
 /** Whether this machine's Claude Code takes PlatformNEX's dev-cycle jobs now (the worker the plugin runs), and why the last try stopped. */
 export type ClaudeCode = { status: 'connecting' | 'online' | 'offline'; note?: string }
 
-/** One dev cycle job, from this machine's pnx or the server's live runs, cut down to what the view draws. */
+/** One dev cycle job from this machine's pnx, cut down to what the view draws. */
 export type DevJob = {
   id: string
-  source: 'local' | 'cloud'
   title: string
   repo?: string
-  state: 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted' | 'waiting'
+  state: 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted'
   phase?: string
   files: number
   /** ms since the epoch. */
@@ -196,7 +195,7 @@ export type DevJob = {
 export type DevEvent = { at: number; level: 'info' | 'warn' | 'error'; text: string }
 
 /** What the Dev cycles view shows. local: how this machine's log could be read (old: no pnx, or before 0.1.19). */
-export type DevCycles = { local: 'unknown' | 'ok' | 'old' | 'failed'; jobs: DevJob[]; events: DevEvent[]; cloud: DevJob[] }
+export type DevCycles = { local: 'unknown' | 'ok' | 'old' | 'failed'; jobs: DevJob[]; events: DevEvent[] }
 
 declare module 'claude-code' {
   interface PluginState {

@@ -1,5 +1,5 @@
-// Pure parts of the Dev cycles view: `pnx activity --json` and the server's live runs, cut down to named, capped fields,
-// and how they read in the pane. Both are untrusted: control characters are stripped, anything that looks like a secret
+// Pure parts of the Dev cycles view: `pnx activity --json` (this machine's own log), cut down to named, capped fields,
+// and how it reads in the pane. It is untrusted: control characters are stripped, anything that looks like a secret
 // is dropped, and pnx's own error text is never shown.
 import type { ClaudeCode, DevEvent, DevJob } from '../types'
 import { cap } from './lib'
@@ -7,7 +7,6 @@ import { cap } from './lib'
 const MAX_OUT = 200_000
 const MAX_JOBS = 10
 const MAX_EVENTS = 30
-const MAX_LIVE = 20
 /** A finished job older than this is no longer news. */
 const FINISHED_KEEP_MS = 60 * 60_000
 
@@ -55,7 +54,6 @@ export function parseActivity(stdout: string): { jobs: DevJob[]; events: DevEven
     const repo = typeof j['repo'] === 'string' && REPO.test(j['repo']) && !SECRET.test(j['repo']) ? j['repo'] : undefined
     jobs.push({
       id,
-      source: 'local',
       title: text(j['title'], 80) ?? 'Dev cycle',
       repo,
       state,
@@ -79,37 +77,9 @@ export function parseActivity(stdout: string): { jobs: DevJob[]; events: DevEven
   return { jobs, events }
 }
 
-/** The server's live runs (`GET /catalog/dev-cycles/codegen/live`: `{ items }`), only the fields the view draws. */
-export function parseLive(data: unknown): DevJob[] {
-  const items = obj(data)?.['items']
-  const jobs: DevJob[] = []
-  for (const raw of Array.isArray(items) ? items.slice(0, MAX_LIVE) : []) {
-    const r = obj(raw)
-    const id = text(r?.['runId'], 80)
-    const status = r?.['status']
-    if (r === undefined || id === undefined || (status !== 'queued' && status !== 'starting' && status !== 'running')) continue
-    const progress = obj(r['progress'])
-    const phase = progress?.['phase']
-    // The run's component, not its repository: the server's live runs name no repository or branch.
-    const component = typeof r['componentRef'] === 'string' ? /^component:[^/\s]+\/([^/\s]{1,60})$/i.exec(r['componentRef'])?.[1] : undefined
-    jobs.push({
-      id,
-      source: 'cloud',
-      title: text(r['intent'], 80) ?? 'Coding step',
-      repo: component === undefined || SECRET.test(component) ? undefined : component,
-      state: status === 'running' ? 'running' : 'waiting',
-      phase: status === 'running' ? (typeof phase === 'string' && PHASES.includes(phase) ? phase : undefined) : status,
-      files: count(progress?.['filesChanged']),
-      startedAt: time(r['startedAt']),
-    })
-  }
-
-  return jobs
-}
-
-/** Running and waiting first, then the rest; a finished job from long ago is left out. */
-export function visibleJobs(local: DevJob[], cloud: DevJob[], now: number): DevJob[] {
-  const all = [...local, ...cloud].filter(j => !FINISHED.includes(j.state) || now - (j.endedAt ?? j.startedAt ?? now) < FINISHED_KEEP_MS)
+/** Running first, then the rest; a finished job from long ago is left out. */
+export function visibleJobs(local: DevJob[], now: number): DevJob[] {
+  const all = local.filter(j => !FINISHED.includes(j.state) || now - (j.endedAt ?? j.startedAt ?? now) < FINISHED_KEEP_MS)
 
   return [...all.filter(j => !FINISHED.includes(j.state)), ...all.filter(j => FINISHED.includes(j.state))]
 }
@@ -120,7 +90,7 @@ const minutes = (ms: number): string => {
   return m < 1 ? '<1m' : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
 }
 
-export type Row = { mark: string; tone: 'success' | 'error' | 'warning' | undefined; left: string; right: string; sub: string }
+export type Row = { mark: string; tone: 'success' | 'error' | undefined; left: string; right: string; sub: string }
 
 /** One job as two short lines: mark and title with a short status on the right, then repo, where, elapsed. */
 export function rowOf(job: DevJob, now: number, width: number): Row {
@@ -132,30 +102,28 @@ export function rowOf(job: DevJob, now: number, width: number): Row {
         ? job.pr === undefined ? 'done' : `PR #${job.pr}`
         : job.state === 'failed'
           ? job.reason ?? 'failed'
-          : job.state === 'waiting'
-            ? job.phase ?? 'waiting'
-            : job.state
-  const mark = job.state === 'running' ? '◐' : job.state === 'done' ? '✓' : job.state === 'failed' || job.state === 'interrupted' ? '✕' : job.state === 'waiting' ? '⏸' : '⊘'
-  const tone = job.state === 'done' ? 'success' : job.state === 'failed' || job.state === 'interrupted' ? 'error' : job.state === 'waiting' ? 'warning' : undefined
+          : job.state
+  const mark = job.state === 'running' ? '◐' : job.state === 'done' ? '✓' : job.state === 'failed' || job.state === 'interrupted' ? '✕' : '⊘'
+  const tone = job.state === 'done' ? 'success' : job.state === 'failed' || job.state === 'interrupted' ? 'error' : undefined
   const shownRight = cap(right, Math.max(6, Math.floor(width / 2)))
   const elapsed = job.startedAt === undefined ? undefined : minutes((job.endedAt ?? now) - job.startedAt)
-  const sub = [job.repo, job.source === 'local' ? 'this machine' : 'cloud', elapsed].filter((p): p is string => p !== undefined).join(' · ')
+  const sub = [job.repo, 'this machine', elapsed].filter((p): p is string => p !== undefined).join(' · ')
 
   return { mark, tone, left: cap(`${mark} ${job.title}`, Math.max(8, width - shownRight.length - 1)), right: shownRight, sub: `  ${cap(sub, Math.max(4, width - 2))}` }
 }
 
 const two = (n: number): string => String(n).padStart(2, '0')
 
-/** The last `count` events as `HH:MM  text` (the machine's local time), oldest first. */
+/** The last `count` events as `HH:MM  text` (the machine's local time), newest first, so the latest is at the top. */
 export function logLines(events: DevEvent[], count: number, width: number): { text: string; level: DevEvent['level'] }[] {
-  return events.slice(-count).map(e => ({ text: `${two(new Date(e.at).getHours())}:${two(new Date(e.at).getMinutes())}  ${cap(e.text, Math.max(4, width - 7))}`, level: e.level }))
+  return events.slice(-count).reverse().map(e => ({ text: `${two(new Date(e.at).getHours())}:${two(new Date(e.at).getMinutes())}  ${cap(e.text, Math.max(4, width - 7))}`, level: e.level }))
 }
 
-/** One line for the notice area when a job seen running last time has now finished or failed (this machine's jobs only). */
+/** One line for the notice area when a job seen running last time has now finished or failed. */
 export function finishedNotice(before: DevJob[], after: DevJob[]): { text: string; tone: 'success' | 'error' } | undefined {
   for (const b of before) {
-    if (b.source !== 'local' || b.state !== 'running') continue
-    const a = after.find(j => j.source === 'local' && j.id === b.id)
+    if (b.state !== 'running') continue
+    const a = after.find(j => j.id === b.id)
     if (a === undefined || a.state === 'running' || a.state === 'cancelled') continue
     if (a.state === 'done') return { text: cap(`Dev cycle done: ${a.title}${a.pr === undefined ? '' : ` · PR #${a.pr}`}`, 120), tone: 'success' }
 
@@ -166,8 +134,8 @@ export function finishedNotice(before: DevJob[], after: DevJob[]): { text: strin
 }
 
 /** The Dev cycles view's live badge: `◐N` while N jobs run, `✕` for a failure not yet seen (never while the view is open), else nothing. */
-export function badge(local: DevJob[], cloud: DevJob[], seenAt: number | undefined, isOpen: boolean, now: number): string {
-  const jobs = visibleJobs(local, cloud, now)
+export function badge(local: DevJob[], seenAt: number | undefined, isOpen: boolean, now: number): string {
+  const jobs = visibleJobs(local, now)
   const running = jobs.filter(j => j.state === 'running').length
   const isUnseen = !isOpen && jobs.some(j => (j.state === 'failed' || j.state === 'interrupted') && (j.endedAt ?? j.startedAt ?? 0) > (seenAt ?? 0))
 

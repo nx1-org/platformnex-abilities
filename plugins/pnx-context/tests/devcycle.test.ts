@@ -1,11 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 
-import { badge, devStatus, finishedNotice, logLines, parseActivity, parseLive, rowOf, visibleJobs } from '../hooks/devcycle'
+import { badge, devStatus, finishedNotice, logLines, parseActivity, rowOf, visibleJobs } from '../hooks/devcycle'
 import { MIN_ACTIVITY_PNX, WANT_ACTIVITY_PNX, WANT_PNX, isAtLeast } from '../hooks/worker'
 import type { DevJob } from '../types'
 
 const NOW = Date.parse('2026-11-25T10:30:00Z')
-const job = (over: Partial<DevJob> = {}): DevJob => ({ id: 'j1', source: 'local', title: 'Add retry', state: 'running', files: 0, ...over })
+const job = (over: Partial<DevJob> = {}): DevJob => ({ id: 'j1', title: 'Add retry', state: 'running', files: 0, ...over })
 const activity = (jobs: unknown[], events: unknown[] = []) => JSON.stringify({ v: 1, jobs, events })
 
 test('reads pnx activity: named fields only, capped, control characters stripped', () => {
@@ -74,45 +74,22 @@ test('a seeded secret in any field drops that job or event, and a bad repo or ph
   expect(out?.events.map(e => e.text)).toEqual(['changed ok.ts'])
 })
 
-test('reads the server live runs: named fields only, component not repository, never an address', () => {
-  const jobs = parseLive({
-    items: [
-      { runId: 'r1', kind: 'generate', status: 'running', progress: { phase: 'writing', filesChanged: 3, areas: [{ label: 'x' }] }, startedAt: '2026-11-25T10:10:00Z', intent: 'Add retry', componentRef: 'component:default/gateway', requestedBy: 'someone@example.test', systemRef: 'system:default/p' },
-      { runId: 'r2', status: 'starting', progress: null, startedAt: '2026-11-25T10:29:00Z', intent: null, componentRef: null },
-      { runId: 'r3', status: 'succeeded' },
-      { status: 'running' },
-      'junk',
-    ],
-  })
-  expect(jobs.map(j => j.id)).toEqual(['r1', 'r2'])
-  expect(jobs[0]).toEqual({ id: 'r1', source: 'cloud', title: 'Add retry', repo: 'gateway', state: 'running', phase: 'writing', files: 3, startedAt: Date.parse('2026-11-25T10:10:00Z') })
-  expect(jobs[1]?.state).toBe('waiting')
-  expect(jobs[1]?.phase).toBe('starting')
-  expect(jobs[1]?.title).toBe('Coding step')
-  expect(JSON.stringify(jobs).includes('example.test')).toBe(false)
-  expect(parseLive(undefined)).toEqual([])
-  expect(parseLive({ items: 'x' })).toEqual([])
-  expect(parseLive({ items: Array.from({ length: 50 }, (_, i) => ({ runId: `r${i}`, status: 'running' })) }).length).toBe(20)
-})
-
 test('rows are two short lines with a mark and a word for every state', () => {
   const running = rowOf(job({ phase: 'opening_pr', files: 4, repo: 'acme/gateway', startedAt: NOW - 3 * 60_000 }), NOW, 36)
   expect(running.left).toBe('◐ Add retry')
   expect(running.right).toBe('opening pr 4 files')
   expect(running.sub).toBe('  acme/gateway · this machine · 3m')
-  expect(rowOf(job({ state: 'done', pr: 7, source: 'cloud', repo: 'gateway', startedAt: NOW - 90 * 60_000, endedAt: NOW - 20 * 60_000 }), NOW, 36)).toEqual({
+  expect(rowOf(job({ state: 'done', pr: 7, repo: 'gateway', startedAt: NOW - 90 * 60_000, endedAt: NOW - 20 * 60_000 }), NOW, 36)).toEqual({
     mark: '✓',
     tone: 'success',
     left: '✓ Add retry',
     right: 'PR #7',
-    sub: '  gateway · cloud · 1h10m',
+    sub: '  gateway · this machine · 1h10m',
   })
   const failed = rowOf(job({ state: 'failed', reason: 'offline' }), NOW, 36)
   expect([failed.mark, failed.tone, failed.right]).toEqual(['✕', 'error', 'offline'])
   expect(rowOf(job({ state: 'interrupted' }), NOW, 36).mark).toBe('✕')
   expect(rowOf(job({ state: 'cancelled' }), NOW, 36).mark).toBe('⊘')
-  const waiting = rowOf(job({ source: 'cloud', state: 'waiting', phase: 'queued' }), NOW, 36)
-  expect([waiting.mark, waiting.right, waiting.sub]).toEqual(['⏸', 'queued', '  cloud'])
   // The two lines fit the pane.
   const long = rowOf(job({ title: 'x'.repeat(100), repo: `acme/${'y'.repeat(90)}`, phase: 'writing', files: 12 }), NOW, 36)
   expect(long.left.length + long.right.length + 1 <= 36).toBe(true)
@@ -124,19 +101,21 @@ test('running first, and a finished job from hours ago is left out', () => {
   const hour = 60 * 60_000
   const list = visibleJobs(
     [job({ id: 'old', state: 'done', endedAt: NOW - 3 * hour }), job({ id: 'recent', state: 'failed', endedAt: NOW - 5 * 60_000 }), job({ id: 'run' })],
-    [job({ id: 'c1', source: 'cloud' })],
     NOW,
   )
-  expect(list.map(j => j.id)).toEqual(['run', 'c1', 'recent'])
+  expect(list.map(j => j.id)).toEqual(['run', 'recent'])
 })
 
-test('the log lines read HH:MM then the text, newest last, and are capped', () => {
+test('the log lines read HH:MM then the text, newest first, and are capped', () => {
   const at = Date.parse('2026-11-25T10:21:00Z')
   const events = Array.from({ length: 10 }, (_, i) => ({ at, level: 'info' as const, text: `event ${i}` }))
   const six = logLines(events, 6, 36)
   expect(six.length).toBe(6)
-  expect(six[0]?.text).toMatch(/^\d\d:\d\d {2}event 4$/)
-  expect(six[5]?.text).toMatch(/event 9$/)
+  // The last six events (4 to 9), the latest on top.
+  expect(six[0]?.text).toMatch(/^\d\d:\d\d {2}event 9$/)
+  expect(six[5]?.text).toMatch(/event 4$/)
+  // The input is not reordered.
+  expect(events[0]?.text).toBe('event 0')
   expect(logLines(events, 30, 36).length).toBe(10)
   expect(logLines([{ at, level: 'error', text: 'y'.repeat(100) }], 6, 20)[0]?.text.length).toBe(20)
   expect(logLines([], 6, 36)).toEqual([])
@@ -151,10 +130,15 @@ test('a job seen running that then finishes or fails gives one line; nothing els
   expect(finishedNotice([run], [job({ state: 'done', pr: 9 })])).toEqual({ text: 'Dev cycle done: Add retry · PR #9', tone: 'success' })
   expect(finishedNotice([run], [job({ state: 'failed', reason: 'no changes' })])).toEqual({ text: 'Dev cycle failed: Add retry · no changes', tone: 'error' })
   expect(finishedNotice([run], [job({ state: 'interrupted' })])?.text).toBe('Dev cycle failed: Add retry · interrupted')
-  // A cloud run leaving the live list says nothing about how it ended.
-  expect(finishedNotice([job({ source: 'cloud' })], [])).toBeUndefined()
   // Another job's id is not this one.
   expect(finishedNotice([run], [job({ id: 'other', state: 'done' })])).toBeUndefined()
+})
+
+test('the view holds only jobs from this machine: a job carries no origin, and the server run shape is not read', () => {
+  const out = parseActivity(activity([{ id: 'a', title: 'Mine', state: 'running' }]))
+  expect(Object.keys(out?.jobs[0] ?? {}).includes('source')).toBe(false)
+  // What the server's live list looks like (a teammate's run): it is not pnx activity, so it reads as nothing.
+  expect(parseActivity(JSON.stringify({ items: [{ runId: 'r1', status: 'running', intent: 'Teammate change', requestedBy: 'someone@example.test' }] }))).toBeUndefined()
 })
 
 test('the log needs pnx 0.1.19, and asking for it does not change what the worker asks for', () => {
@@ -167,19 +151,17 @@ test('the log needs pnx 0.1.19, and asking for it does not change what the worke
 
 test('the view badge counts running jobs, flags a failure not yet seen, and is empty when idle', () => {
   const failed = job({ id: 'f', state: 'failed', endedAt: NOW - 60_000 })
-  expect(badge([], [], undefined, false, NOW)).toBe('')
-  expect(badge([job()], [], undefined, false, NOW)).toBe('◐1')
-  expect(badge([job(), job({ id: 'b' })], [job({ id: 'c', source: 'cloud' })], undefined, false, NOW)).toBe('◐3')
-  // A waiting cloud run is not running.
-  expect(badge([], [job({ source: 'cloud', state: 'waiting' })], undefined, false, NOW)).toBe('')
-  expect(badge([failed], [], undefined, false, NOW)).toBe('✕')
-  expect(badge([job(), failed], [], undefined, false, NOW)).toBe('◐1 ✕')
+  expect(badge([], undefined, false, NOW)).toBe('')
+  expect(badge([job()], undefined, false, NOW)).toBe('◐1')
+  expect(badge([job(), job({ id: 'b' })], undefined, false, NOW)).toBe('◐2')
+  expect(badge([failed], undefined, false, NOW)).toBe('✕')
+  expect(badge([job(), failed], undefined, false, NOW)).toBe('◐1 ✕')
   // Seen once the view was left after it; never shown while the view is open.
-  expect(badge([failed], [], NOW, false, NOW)).toBe('')
-  expect(badge([failed], [], NOW - 120_000, false, NOW)).toBe('✕')
-  expect(badge([failed], [], undefined, true, NOW)).toBe('')
-  expect(badge([job({ id: 'i', state: 'interrupted', startedAt: NOW - 1000 })], [], undefined, false, NOW)).toBe('✕')
-  expect(badge([job({ id: 'd', state: 'done', endedAt: NOW - 1000 }), job({ id: 'x', state: 'cancelled', endedAt: NOW - 1000 })], [], undefined, false, NOW)).toBe('')
+  expect(badge([failed], NOW, false, NOW)).toBe('')
+  expect(badge([failed], NOW - 120_000, false, NOW)).toBe('✕')
+  expect(badge([failed], undefined, true, NOW)).toBe('')
+  expect(badge([job({ id: 'i', state: 'interrupted', startedAt: NOW - 1000 })], undefined, false, NOW)).toBe('✕')
+  expect(badge([job({ id: 'd', state: 'done', endedAt: NOW - 1000 }), job({ id: 'x', state: 'cancelled', endedAt: NOW - 1000 })], undefined, false, NOW)).toBe('')
 })
 
 test('the view says why the worker is not taking jobs, and says nothing running only when it is online', () => {
