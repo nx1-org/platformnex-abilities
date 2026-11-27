@@ -1394,7 +1394,14 @@ export const register: Register = (on, options) => {
     const ask = (text: string) => act(async () => void (await $.prompt.submit({ text })))
 
     const liveView = () => {
-      if (live === undefined) return <Text dimColor>No deploy running.</Text>
+      if (live === undefined) {
+        return (
+          <Box flexDirection="column">
+            <Text bold>No deploy running.</Text>
+            <Text dimColor>A deploy shows here, step by step, while it runs.</Text>
+          </Box>
+        )
+      }
       const where = live.environment ?? 'an environment'
       const isFailed = live.status === 'failed'
       const title = live.status === 'succeeded' ? `Deployed to ${where}` : isFailed ? `Deploy to ${where} failed` : live.status === 'awaiting_approval' ? `Waiting for approval · ${where}` : `Deploying to ${where}`
@@ -1474,7 +1481,12 @@ export const register: Register = (on, options) => {
 
       return (
         <Box flexDirection="column">
-          {review === undefined && <Text dimColor>No open release.</Text>}
+          {review === undefined && (
+            <Box flexDirection="column">
+              <Text bold>No open release.</Text>
+              <Text dimColor>Open a draft release for an environment.</Text>
+            </Box>
+          )}
           {review !== undefined && (
             <Box flexDirection="column">
               {row(<Text bold>{cap(`Release to ${review.environment ?? 'an environment'}`, Math.max(12, columns - 20))}</Text>, <Text color="warning">{review.status.replace(/_/g, ' ')}</Text>)}
@@ -1550,6 +1562,7 @@ export const register: Register = (on, options) => {
               </Box>,
               <Text dimColor>{cap(repo.branch, Math.max(8, columns - wide - 12))}</Text>,
             )}
+          {repo.branch !== undefined && rows.length > 0 && rule}
           {rows.map(r =>
             row(
               <Box flexDirection="row" key={`env-row-${r.name}`}>
@@ -1565,8 +1578,8 @@ export const register: Register = (on, options) => {
             ),
           )}
           {rows.length === 0 && <Text dimColor>No environments set up.</Text>}
-          <Text> </Text>
-          <Text dimColor>● deployed · ◐ release open · ○ nothing yet</Text>
+          {rule}
+          <Text dimColor size="caption">● deployed · ◐ release open · ○ nothing yet</Text>
         </Box>
       )
     }
@@ -1590,6 +1603,8 @@ export const register: Register = (on, options) => {
         <Button key="log-toggle" plain hotkey="l" onPress={act(() => update($, ui, x => ({ ...x, logOpen: x.logOpen !== true })))}>
           {lead('l', u.logOpen === true ? 'short log' : 'full log')}
         </Button>
+        {devLog.length > 0 && rule}
+        {devLog.length > 0 && <Text dimColor size="caption">RECENT ACTIVITY</Text>}
         {devLog.map((l, n) => (
           <Text key={`dev-log-${n}`} color={l.level === 'error' ? 'error' : l.level === 'warn' ? 'warning' : undefined} dimColor={l.level === 'info'}>
             {l.text}
@@ -1610,7 +1625,7 @@ export const register: Register = (on, options) => {
             PlatformNEX, then which repository and branch and how fresh. Problems only below that: an error, dev cycles offline. */}
         <Box flexDirection="row" justifyContent="space-between">
           <Box flexDirection="row">
-            <Text bold>{cap(title, Math.max(10, columns - 14)).toUpperCase()}</Text>
+            <Text bold size="heading">{cap(title, Math.max(10, columns - 14)).toUpperCase()}</Text>
             {current !== undefined && <Text color={healthTone(currentStatus)}>{` ● ${healthLabel(currentStatus)}`}</Text>}
           </Box>
           <Box flexDirection="row" gap={1}>
@@ -1658,21 +1673,32 @@ export const register: Register = (on, options) => {
             )}
           </Box>
         </Box>
-        <Text dimColor>{cap(`connected to ${envLabel}`, columns)}</Text>
-        {cfg.mode === 'signin' && <Text dimColor>{cap(u.signinEmail === undefined ? 'connected via sign-in' : `connected as ${u.signinEmail} via sign-in`, columns * 2)}</Text>}
-        {active !== undefined && <Text dimColor>{cap(`${active.name}${active.branch === undefined ? '' : ` · ${active.branch}`}`, columns * 2)}</Text>}
-        <Text dimColor>
-          {cap(
-            `${matched} of ${d.repos.length} repos · ${u.isRefreshing === true ? 'refreshing…' : `updated ${ago(d.at, now)}`}`,
-            columns * 2,
+        <Text dimColor size="caption">{cap(`connected to ${envLabel}`, columns)}</Text>
+        {cfg.mode === 'signin' && <Text dimColor size="caption">{cap(u.signinEmail === undefined ? 'connected via sign-in' : `connected as ${u.signinEmail} via sign-in`, columns * 2)}</Text>}
+        {/* One card: the repository (bold), its branch (dim), how many repositories and how fresh, and the buttons that
+            switch component or repository, all inside it. */}
+        <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1} marginY={1}>
+          {active !== undefined && (
+            <Box flexDirection="row">
+              <Text dimColor>{'⎇ '}</Text>
+              <Text bold>{cap(active.name, Math.max(8, columns - 8))}</Text>
+            </Box>
           )}
-        </Text>
-        {d.status === 'error' && d.error !== undefined && <Text color="error">{cap(d.error, columns * 2)}</Text>}
-        {options['devCycles'] !== 'off' && cc.status === 'offline' && <Text color="warning">{cap(`○ Dev cycles offline · ${isTerminal ? 'k' : 'press k'} to see why`, columns * 2)}</Text>}
-        {current?.detailNote !== undefined && <Text dimColor>{cap(current.detailNote, columns * 2)}</Text>}
-        {/* Another component of this repository, or another repository: only when there is one to switch to. */}
-        {(shown.length > 1 || d.repos.length > 1) && (
-          <Box flexDirection="row" gap={2}>
+          {active?.branch !== undefined && (
+            <Box flexDirection="row">
+              <Text dimColor>{'⎇ '}</Text>
+              <Text dimColor>{cap(active.branch, Math.max(8, columns - 8))}</Text>
+            </Box>
+          )}
+          <Text dimColor size="caption">
+            {cap(
+              `${matched} of ${d.repos.length} repos · ${u.isRefreshing === true ? 'refreshing…' : `updated ${ago(d.at, now)}`}`,
+              columns * 2,
+            )}
+          </Text>
+          {/* Another component of this repository, or another repository: only when there is one to switch to. */}
+          {(shown.length > 1 || d.repos.length > 1) && (
+          <Box flexDirection="row" gap={2} marginTop={1}>
             {shown.length > 1 && current !== undefined && (
               <Button
                 key="next-component"
@@ -1689,9 +1715,12 @@ export const register: Register = (on, options) => {
               </Button>
             )}
           </Box>
-        )}
+          )}
+        </Box>
+        {d.status === 'error' && d.error !== undefined && <Text color="error">{cap(d.error, columns * 2)}</Text>}
+        {options['devCycles'] !== 'off' && cc.status === 'offline' && <Text color="warning">{cap(`○ Dev cycles offline · ${isTerminal ? 'k' : 'press k'} to see why`, columns * 2)}</Text>}
+        {current?.detailNote !== undefined && <Text dimColor>{cap(current.detailNote, columns * 2)}</Text>}
         {active !== undefined && active.matches.length > MAX_MATCHES && <Text dimColor>+{active.matches.length - MAX_MATCHES} more components in this repository</Text>}
-        {rule}
         {/* Change the connection: another environment or key, or Disconnect. The one in use stays until a new key connects. */}
         {u.connOpen === true && (
           <Box flexDirection="column">
@@ -1884,7 +1913,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="row" gap={2}>
               {VIEWS.map((v, i) =>
                 (current !== undefined && active !== undefined) || v.id === 'dev' ? (
-                  <Button key={`view-${v.id}`} {...(v.id === view ? {} : { plain: true as const })} hotkey={String(i + 1)} onPress={act(() => showView(v.id))}>
+                  <Button key={`view-${v.id}`} {...(v.id === view ? { variant: 'primary' as const } : { plain: true as const, dimColor: true })} hotkey={String(i + 1)} onPress={act(() => showView(v.id))}>
                     {current !== undefined && active !== undefined ? lead(String(i + 1), v.label) : v.label}
                   </Button>
                 ) : null,

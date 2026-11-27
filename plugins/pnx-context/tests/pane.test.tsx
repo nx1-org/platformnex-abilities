@@ -800,7 +800,8 @@ test('the header names the component, then the connection and the repository', {
   expect((await ui.find({ type: 'Text', text: /^GATEWAY$/ }))?.text).toBe('GATEWAY')
   expect(await ui.find({ type: 'Text', text: /^PLATFORMNEX$/ })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /^connected to / }))?.text).toBe('connected to portal.example.test')
-  expect((await ui.find({ type: 'Text', text: /^gateway · feat\/x$/ }))?.text).toBe('gateway · feat/x')
+  expect((await ui.find({ type: 'Text', text: /^gateway$/ }))?.text).toBe('gateway')
+  expect((await ui.find({ type: 'Text', text: /^feat\/x$/ }))?.text).toBe('feat/x')
   expect((await ui.find({ type: 'Text', text: /repos ·/ }))?.text).toMatch(/^1 of 1 repos · /)
   // The old two-column status rows are gone.
   expect(await ui.find({ type: 'Text', text: /^✓ PlatformNEX/ })).toBeUndefined()
@@ -915,7 +916,8 @@ test('on Windows the repository you are in is found and shown, with no shell', {
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
 
-  expect((await ui.find({ type: 'Text', text: /^gateway · feat\/x$/ }))?.text).toBe('gateway · feat/x')
+  expect((await ui.find({ type: 'Text', text: /^gateway$/ }))?.text).toBe('gateway')
+  expect((await ui.find({ type: 'Text', text: /^feat\/x$/ }))?.text).toBe('feat/x')
   expect((await ui.find({ type: 'Text', text: /repos ·/ }))?.text).toMatch(/^1 of 1 repos · /)
   expect((await ui.find({ type: 'Text', text: /^GATEWAY$/ }))?.text).toBe('GATEWAY')
   // git is run directly, never through sh.
